@@ -62,8 +62,7 @@ def get_doctor_information(
                 d for d in doctors
                 if clean_q in d.doctor_name.lower() or clean_q in d.specialization.lower()
             ]
-            if matched:
-                doctors = matched
+            doctors = matched
 
         return {
             "doctors": [
@@ -314,4 +313,3 @@ def reschedule_appointment(
     finally:
         if own_session:
             db.close()
-

@@ -3,6 +3,9 @@ Unit tests for LiveKit Voice Agent pipeline instantiation, tool registration,
 and multi-provider audio configuration.
 """
 
+import asyncio
+import time
+
 import pytest
 from backend.agent import voice_agent
 from backend.agent.voice_agent import (
@@ -64,6 +67,80 @@ async def test_clinical_tools_callable():
 
 
 @pytest.mark.asyncio
+async def test_unknown_doctor_is_not_silently_substituted(monkeypatch):
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(voice_agent.asyncio, "to_thread", fake_to_thread)
+    result = await lookup_doctor_information(query="Ramad Khan")
+    assert "No doctor matches 'Ramad Khan'" in result
+    assert "Do not substitute without asking" in result
+    assert "Dr. Ahmed Khan" in result
+
+
+@pytest.mark.asyncio
+async def test_booking_tool_returns_confirmation_id_only_on_success(monkeypatch):
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(voice_agent.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        voice_agent,
+        "book_appointment",
+        lambda **kwargs: {
+            "status": "CONFIRMED",
+            "appointment_id": "APT-12345678",
+            "message": "Appointment successfully confirmed.",
+        },
+    )
+    result = await book_clinical_appointment(
+        patient_name="Test Patient",
+        contact_number="5551234567",
+        doctor_id="DOC-001",
+        appointment_date="2026-11-09",
+        appointment_time="11:00",
+    )
+    assert "APT-12345678" in result
+
+    monkeypatch.setattr(
+        voice_agent,
+        "book_appointment",
+        lambda **kwargs: {
+            "status": "FAILED",
+            "message": "Could not book: doctor not found.",
+        },
+    )
+    result = await book_clinical_appointment(
+        patient_name="Test Patient",
+        contact_number="5551234567",
+        doctor_id="DOC-UNKNOWN",
+        appointment_date="2026-11-09",
+        appointment_time="11:00",
+    )
+    assert "Booking was not confirmed" in result
+    assert "Confirmation ID" not in result
+
+
+@pytest.mark.asyncio
+async def test_availability_tool_does_not_block_voice_event_loop(monkeypatch):
+    def slow_check(**kwargs):
+        time.sleep(0.2)
+        return {"message": "Availability checked."}
+
+    monkeypatch.setattr(voice_agent, "check_availability", slow_check)
+    task = asyncio.create_task(
+        check_doctor_availability(
+            doctor_id="DOC-001",
+            appointment_date="2026-11-09",
+            preferred_time="11:00",
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert not task.done()
+    assert await task == "Availability checked."
+
+
+@pytest.mark.asyncio
 async def test_tool_availability_execution():
     avail = await check_doctor_availability(
         doctor_id="DOC-001",
@@ -113,8 +190,40 @@ def test_gemini_model_fallback_normalization(monkeypatch):
     )
 
     assert build_llm() is expected
-    # gemini-3.8-flash should automatically normalize to gemini-3.5-flash-lite
-    assert captured["model"] == "gemini-3.5-flash-lite"
+    assert captured["model"] == "gemini-3.5-flash"
+    assert captured["timeout"] == 20.0
+
+
+def test_groq_provider_requires_key(monkeypatch):
+    monkeypatch.setattr(voice_agent.settings, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(voice_agent.settings, "GROQ_API_KEY", "")
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY is not configured"):
+        build_llm()
+
+
+def test_groq_provider_has_bounded_request_timeout(monkeypatch):
+    captured = {}
+    expected = object()
+    monkeypatch.setattr(voice_agent.settings, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(voice_agent.settings, "GROQ_API_KEY", "local-test-key")
+    monkeypatch.setattr(voice_agent.settings, "GROQ_MODEL", "qwen-test-model")
+    monkeypatch.setattr(
+        voice_agent.openai,
+        "LLM",
+        lambda **kwargs: captured.update(kwargs) or expected,
+    )
+
+    assert build_llm() is expected
+    assert captured["timeout"] == 20.0
+    assert captured["base_url"] == "https://api.groq.com/openai/v1"
+
+
+def test_voice_turn_handling_allows_stt_to_finish():
+    options = voice_agent.build_turn_handling_options()
+    assert options["endpointing"]["min_delay"] == 0.8
+    assert options["endpointing"]["max_delay"] == 2.5
+    assert options["interruption"]["min_duration"] == 0.6
+    assert options["interruption"]["min_words"] == 2
 
 
 def test_elevenlabs_voice_fallback(monkeypatch):
@@ -156,4 +265,3 @@ def test_deepgram_stt_fallback_without_key(monkeypatch):
 
     assert voice_agent.build_stt() is expected
     assert "api_key" in captured
-

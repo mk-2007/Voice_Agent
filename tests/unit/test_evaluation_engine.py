@@ -212,3 +212,5 @@ def test_suite_isolates_each_scenario_database_and_calendar(test_db, monkeypatch
     summary = runner.run_suite(scenarios=[scenario, scenario])
     assert summary["passed_scenarios"] == 2
     assert [report["db_state_details"]["time"] for report in summary["reports"]] == ["10:00", "10:00"]
+    assert test_db.query(Appointment).count() == 0
+    assert test_db.query(Patient).count() == 0

@@ -74,12 +74,24 @@ def test_appointment_lifecycle_and_validation(client):
     assert booking.status_code == 201, booking.text
     appointment_id = booking.json()["appointment_id"]
     assert client.get(f"/api/v1/appointments/{appointment_id}").json()["status"] == "CONFIRMED"
+    dashboard_records = client.get(
+        "/api/v1/appointments",
+        params={"appointment_date": "2026-11-04"},
+    ).json()
+    assert any(record["appointment_id"] == appointment_id for record in dashboard_records)
 
     rescheduled = client.post(f"/api/v1/appointments/{appointment_id}/reschedule", json={
         "new_date": "2026-11-05", "new_time": "11:00",
     })
     assert rescheduled.status_code == 200, rescheduled.text
     assert rescheduled.json()["start_time"] == "11:00"
+    assert any(
+        record["appointment_id"] == appointment_id
+        for record in client.get(
+            "/api/v1/appointments",
+            params={"appointment_date": "2026-11-05"},
+        ).json()
+    )
 
     cancelled = client.delete(f"/api/v1/appointments/{appointment_id}")
     assert cancelled.status_code == 204

@@ -28,8 +28,11 @@ from livekit.agents import (
     Agent,
     AgentSession,
     AutoSubscribe,
+    EndpointingOptions,
+    InterruptionOptions,
     JobContext,
     JobProcess,
+    TurnHandlingOptions,
     WorkerOptions,
     cli,
     function_tool,
@@ -71,27 +74,31 @@ def build_llm():
     Constructs LLM provider.
     Defaults to Groq (ultra-low ~150ms TTFT, generous free tier) or OpenAI.
     """
-    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+    if settings.LLM_PROVIDER == "groq":
+        if not settings.GROQ_API_KEY:
+            raise RuntimeError("LLM_PROVIDER is groq but GROQ_API_KEY is not configured")
         logger.info(f"Using Groq LLM: {settings.GROQ_MODEL}")
         return openai.LLM(
             model=settings.GROQ_MODEL,
             api_key=settings.GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1",
             temperature=0.2,
+            timeout=20.0,
         )
     if settings.LLM_PROVIDER == "gemini":
         if not settings.GEMINI_API_KEY:
             raise RuntimeError("LLM_PROVIDER is gemini but GEMINI_API_KEY is not configured")
         model = settings.GEMINI_MODEL
-        # Normalize to ultra-reliable, high-availability Gemini models with verified low TTFT
-        if model in ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]:
-            model = "gemini-3.5-flash-lite"
+        if model == "gemini-3.8-flash":
+            logger.warning("Gemini 3.8 Flash is currently returning overloaded responses; using tested gemini-3.5-flash")
+            model = "gemini-3.5-flash"
         logger.info(f"Using Gemini LLM: {model}")
         return openai.LLM(
             model=model,
             api_key=settings.GEMINI_API_KEY,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             temperature=0.2,
+            timeout=20.0,
             extra_headers={"x-goog-api-client": "clinical-voice-agent/1.0.0"},
         )
     logger.info(f"Using OpenAI LLM: {settings.OPENAI_MODEL}")
@@ -153,6 +160,23 @@ def build_vad():
         return None
 
 
+def build_turn_handling_options() -> TurnHandlingOptions:
+    return {
+        "endpointing": EndpointingOptions(
+            mode="fixed",
+            min_delay=0.8,
+            max_delay=2.5,
+        ),
+        "interruption": InterruptionOptions(
+            enabled=True,
+            mode="vad",
+            min_duration=0.6,
+            min_words=2,
+            resume_false_interruption=True,
+        ),
+    }
+
+
 # =====================================================================
 # LiveKit Function Tool Registrations
 # =====================================================================
@@ -167,7 +191,8 @@ async def check_doctor_availability(
     Check if a doctor is available on a specific date (YYYY-MM-DD) and optional time (HH:MM).
     Always call this tool before telling a patient that a slot is free.
     """
-    res = check_availability(
+    res = await asyncio.to_thread(
+        check_availability,
         doctor_id=doctor_id,
         appointment_date=appointment_date,
         preferred_time=preferred_time,
@@ -188,7 +213,8 @@ async def book_clinical_appointment(
     Confirm and book an appointment after the patient has explicitly agreed.
     Requires patient name, contact number, doctor ID/name, date (YYYY-MM-DD), and time (HH:MM).
     """
-    res = book_appointment(
+    res = await asyncio.to_thread(
+        book_appointment,
         patient_name=patient_name,
         contact_number=contact_number,
         doctor_id=doctor_id,
@@ -196,7 +222,10 @@ async def book_clinical_appointment(
         appointment_time=appointment_time,
         appointment_type=appointment_type,
     )
-    return res.get("message", "Appointment operation processed.")
+    message = res.get("message", "Appointment booking failed.")
+    if res.get("status") != "CONFIRMED":
+        return f"Booking was not confirmed. {message}"
+    return f"{message} Confirmation ID: {res['appointment_id']}."
 
 
 @function_tool
@@ -205,10 +234,14 @@ async def lookup_doctor_information(query: Optional[str] = None) -> str:
     Retrieve doctors at the clinic and their medical specialties.
     Query can be a doctor's name or medical field (e.g. 'Dermatologist').
     """
-    res = get_doctor_information(query=query)
+    res = await asyncio.to_thread(get_doctor_information, query=query)
     docs = res.get("doctors", [])
     if not docs:
-        return "No doctors currently match that query."
+        if query:
+            all_doctors = await asyncio.to_thread(get_doctor_information)
+            names = ", ".join(d["name"] for d in all_doctors.get("doctors", []))
+            return f"No doctor matches '{query}'. Do not substitute without asking. Clinic doctors include: {names}."
+        return "No doctors are currently listed."
     doc_lines = [f"{d['name']} ({d['specialization']}) - Hours: {d['working_hours']}" for d in docs]
     return "Our clinic doctors are: " + "; ".join(doc_lines)
 
@@ -218,7 +251,7 @@ async def lookup_clinic_information() -> str:
     """
     Get general clinic administrative information including hours, address, and phone number.
     """
-    info = get_clinic_information()
+    info = await asyncio.to_thread(get_clinic_information)
     return (
         f"{info['clinic_name']} is located at {info['address']}. "
         f"Phone: {info['phone']}. Hours: {info['operating_hours']}."
@@ -230,14 +263,14 @@ async def cancel_existing_appointment(appointment_id: str) -> str:
     """
     Cancel an appointment given its confirmation ID (e.g. APT-XXXXXX).
     """
-    res = cancel_appointment(appointment_id=appointment_id)
+    res = await asyncio.to_thread(cancel_appointment, appointment_id=appointment_id)
     return res.get("message", "Cancellation processed.")
 
 
 @function_tool
 async def lookup_existing_appointment(appointment_id: str) -> str:
     """Look up an appointment by its reference ID and return its date, time, doctor, and status."""
-    res = get_appointment(appointment_id)
+    res = await asyncio.to_thread(get_appointment, appointment_id)
     if not res.get("found"):
         return res.get("message", f"Appointment '{appointment_id}' not found.")
     return (
@@ -255,7 +288,8 @@ async def reschedule_existing_appointment(
     """
     Reschedule an existing appointment to a new date (YYYY-MM-DD) and time (HH:MM).
     """
-    res = reschedule_appointment(
+    res = await asyncio.to_thread(
+        reschedule_appointment,
         appointment_id=appointment_id,
         new_date=new_date,
         new_time=new_time,
@@ -326,6 +360,7 @@ def create_clinical_agent() -> Agent:
         stt=stt,
         tts=tts,
         vad=vad,
+        turn_handling=build_turn_handling_options(),
         allow_interruptions=True,
     )
 
@@ -338,8 +373,8 @@ def prewarm(proc: JobProcess):
     """Preloads Silero VAD ONNX model to avoid event loop stalls when a call connects."""
     try:
         proc.userdata["vad"] = silero.VAD.load(
-            min_speech_duration=0.08,
-            min_silence_duration=0.35,
+            min_speech_duration=0.1,
+            min_silence_duration=0.6,
             activation_threshold=0.55,
         )
         logger.info("Silero VAD successfully prewarmed")
@@ -353,15 +388,17 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     instructions = build_receptionist_instructions()
-    llm = build_llm()
-    stt = build_stt()
-    tts = build_tts()
+    llm, stt, tts = await asyncio.gather(
+        asyncio.to_thread(build_llm),
+        asyncio.to_thread(build_stt),
+        asyncio.to_thread(build_tts),
+    )
 
     vad = None
     if hasattr(ctx, "proc") and hasattr(ctx.proc, "userdata"):
         vad = ctx.proc.userdata.get("vad")
     if vad is None:
-        vad = build_vad()
+        vad = await asyncio.to_thread(build_vad)
 
     agent = ReceptionistAgent(
         instructions=instructions,
@@ -370,8 +407,7 @@ async def entrypoint(ctx: JobContext):
         stt=stt,
         tts=tts,
         vad=vad,
-        min_endpointing_delay=0.45,
-        max_endpointing_delay=1.6,
+        turn_handling=build_turn_handling_options(),
         allow_interruptions=True,
     )
     session = AgentSession(
@@ -380,11 +416,7 @@ async def entrypoint(ctx: JobContext):
         tts=tts,
         vad=vad,
         tools=CLINICAL_TOOLS,
-        min_endpointing_delay=0.45,
-        max_endpointing_delay=1.6,
-        min_interruption_duration=0.4,
-        min_interruption_words=1,
-        resume_false_interruption=True,
+        turn_handling=build_turn_handling_options(),
         allow_interruptions=True,
     )
 

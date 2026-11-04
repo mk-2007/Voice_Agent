@@ -66,6 +66,9 @@ def test_get_doctor_info(test_db):
     assert len(filtered["doctors"]) == 1
     assert filtered["doctors"][0]["doctor_id"] == "DOC-001"
 
+    unmatched = get_doctor_information(query="Ramad Khan", db=test_db)
+    assert unmatched["doctors"] == []
+
 
 def test_check_availability_and_alternatives(test_db):
     res = check_availability(
@@ -124,4 +127,3 @@ def test_booking_workflow_lifecycle(test_db):
     # 5. Verify cancelled status
     check_cancelled = get_appointment(appointment_id=apt_id, db=test_db)
     assert check_cancelled["status"] == "CANCELLED"
-
