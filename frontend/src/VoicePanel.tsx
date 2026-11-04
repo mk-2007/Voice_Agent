@@ -13,7 +13,7 @@ export interface VoicePanelProps {
 
 export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
   const roomRef = useRef<Room | null>(null)
-  const audioElements = useRef<HTMLAudioElement[]>([])
+  const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const timerIntervalRef = useRef<number | null>(null)
   const transcriptStreamRef = useRef<HTMLDivElement | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
@@ -76,6 +76,11 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
     const room = roomRef.current
     roomRef.current = null
     if (room) await room.disconnect()
+    audioElements.current.forEach(element => {
+      element.pause()
+      element.remove()
+    })
+    audioElements.current.clear()
     setConnected(false)
     setUserSpeaking(false)
     setAgentSpeaking(false)
@@ -86,8 +91,11 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
 
   useEffect(() => () => {
     void roomRef.current?.disconnect()
-    audioElements.current.forEach(element => element.remove())
-    audioElements.current = []
+    audioElements.current.forEach(element => {
+      element.pause()
+      element.remove()
+    })
+    audioElements.current.clear()
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
   }, [])
 
@@ -145,13 +153,33 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
       room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
 
+      const attachRemoteAudio = (track: Track) => {
+        const trackId = track.sid ?? track.mediaStreamTrack.id
+        if (track.kind !== Track.Kind.Audio || audioElements.current.has(trackId)) return
+        const audio = track.attach()
+        audio.autoplay = true
+        audio.setAttribute('playsinline', 'true')
+        document.body.appendChild(audio)
+        audioElements.current.set(trackId, audio)
+        void audio.play().catch(err => {
+          if (err instanceof DOMException && err.name === 'NotAllowedError') {
+            setError('The browser blocked Rachel’s audio. End the call, click the page, and reconnect to enable playback.')
+          } else {
+            console.warn('Could not start Rachel’s audio playback:', err)
+          }
+        })
+      }
+
       room.on(RoomEvent.Connected, () => setConnected(true))
       room.on(RoomEvent.Disconnected, () => {
         setConnected(false)
         setUserSpeaking(false)
         setAgentSpeaking(false)
-        audioElements.current.forEach(element => element.remove())
-        audioElements.current = []
+        audioElements.current.forEach(element => {
+          element.pause()
+          element.remove()
+        })
+        audioElements.current.clear()
         setCallEndedAlert(true)
       })
 
@@ -185,30 +213,32 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
 
       room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
         if (track.kind === Track.Kind.Audio && !participant.isLocal) {
-          const audio = track.attach()
-          audio.autoplay = true
-          audio.setAttribute('playsinline', 'true')
-          document.body.appendChild(audio)
-          audioElements.current.push(audio)
-          void audio.play().catch(err => console.warn('Browser audio policy notice:', err))
+          attachRemoteAudio(track)
         }
+      })
+      room.on(RoomEvent.TrackUnsubscribed, track => {
+        const trackId = track.sid ?? track.mediaStreamTrack.id
+        const audio = audioElements.current.get(trackId)
+        if (!audio) return
+        track.detach(audio)
+        audio.pause()
+        audio.remove()
+        audioElements.current.delete(trackId)
       })
 
       // 3. Connect WebRTC peer connection
       await room.connect(creds.server_url, creds.participant_token)
-      await room.startAudio().catch(() => undefined)
+      await room.startAudio().catch(err => {
+        console.warn('Could not initialize browser audio playback:', err)
+        setError('The browser could not initialize Rachel’s audio. End the call, click the page, and reconnect to enable playback.')
+      })
 
       // Attach any remote tracks already published
       for (const p of room.remoteParticipants.values()) {
         if (!p.isLocal) {
           for (const pub of p.audioTrackPublications.values()) {
             if (pub.track && pub.track.kind === Track.Kind.Audio) {
-              const audio = pub.track.attach()
-              audio.autoplay = true
-              audio.setAttribute('playsinline', 'true')
-              document.body.appendChild(audio)
-              audioElements.current.push(audio)
-              void audio.play().catch(() => undefined)
+              attachRemoteAudio(pub.track)
             }
           }
         }

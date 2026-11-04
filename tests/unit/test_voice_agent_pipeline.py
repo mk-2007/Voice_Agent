@@ -4,7 +4,9 @@ and multi-provider audio configuration.
 """
 
 import asyncio
+import logging
 import time
+from types import SimpleNamespace
 
 import pytest
 from backend.agent import voice_agent
@@ -220,10 +222,32 @@ def test_groq_provider_has_bounded_request_timeout(monkeypatch):
 
 def test_voice_turn_handling_allows_stt_to_finish():
     options = voice_agent.build_turn_handling_options()
-    assert options["endpointing"]["min_delay"] == 0.8
-    assert options["endpointing"]["max_delay"] == 2.5
-    assert options["interruption"]["min_duration"] == 0.6
-    assert options["interruption"]["min_words"] == 2
+    assert options["endpointing"]["min_delay"] == 0.4
+    assert options["endpointing"]["max_delay"] == 1.2
+    assert options["interruption"]["min_duration"] == 0.4
+    assert options["interruption"]["min_words"] == 1
+
+
+def test_voice_latency_logging_excludes_transcript_and_reports_pipeline_stages(caplog):
+    event = SimpleNamespace(
+        item=SimpleNamespace(
+            role="assistant",
+            metrics={
+                "e2e_latency": 0.82,
+                "llm_node_ttft": 0.21,
+                "tts_node_ttfb": 0.19,
+                "text": "fictional patient transcript",
+            },
+        )
+    )
+
+    with caplog.at_level(logging.INFO, logger="clinical_voice_agent"):
+        voice_agent.log_voice_turn_latency(event)
+
+    assert "end_to_end': 820.0" in caplog.text
+    assert "llm_first_token': 210.0" in caplog.text
+    assert "tts_first_audio': 190.0" in caplog.text
+    assert "fictional patient transcript" not in caplog.text
 
 
 def test_elevenlabs_voice_fallback(monkeypatch):
@@ -243,6 +267,9 @@ def test_elevenlabs_voice_fallback(monkeypatch):
     assert isinstance(tts, FakeElevenLabsTTS)
     # Rachel (21m00Tcm4TlvDq8ikWAM) should normalize to free premade voice Bella
     assert captured["voice_id"] == "EXAVITQu4vr4xnSDxMaL"
+    assert captured["auto_mode"] is True
+    assert "chunk_length_schedule" not in captured
+    assert "streaming_latency" not in captured
 
 
 def test_elevenlabs_fallback_to_openai_without_key(monkeypatch):

@@ -138,8 +138,7 @@ def build_tts():
                 api_key=settings.ELEVENLABS_API_KEY,
                 voice_id=voice_id,
                 model=settings.ELEVENLABS_MODEL_ID,
-                streaming_latency=3,
-                chunk_length_schedule=[50, 90, 140, 220],
+                auto_mode=True,
             )
         except Exception as e:
             logger.warning(f"Failed to load ElevenLabs plugin: {e}, falling back to OpenAI TTS")
@@ -164,17 +163,43 @@ def build_turn_handling_options() -> TurnHandlingOptions:
     return {
         "endpointing": EndpointingOptions(
             mode="fixed",
-            min_delay=0.8,
-            max_delay=2.5,
+            min_delay=0.4,
+            max_delay=1.2,
         ),
         "interruption": InterruptionOptions(
             enabled=True,
             mode="vad",
-            min_duration=0.6,
-            min_words=2,
+            min_duration=0.4,
+            min_words=1,
             resume_false_interruption=True,
         ),
     }
+
+
+def log_voice_turn_latency(event: Any) -> None:
+    """Log per-turn pipeline timings without logging transcripts or patient data."""
+    item = getattr(event, "item", None)
+    if item is None:
+        return
+
+    metrics = getattr(item, "metrics", {})
+    stage_names = (
+        ("end_of_turn_delay", "end_of_turn"),
+        ("transcription_delay", "transcription"),
+        ("on_user_turn_completed_delay", "turn_callback"),
+        ("e2e_latency", "end_to_end"),
+        ("llm_node_ttft", "llm_first_token"),
+        ("llm_node_ttfs", "llm_first_sentence"),
+        ("tts_node_ttfb", "tts_first_audio"),
+        ("playback_latency", "audio_playback"),
+    )
+    stage_ms = {
+        label: round(metrics[key] * 1000, 1)
+        for key, label in stage_names
+        if isinstance(metrics, dict) and isinstance(metrics.get(key), (int, float))
+    }
+    if stage_ms:
+        logger.info("Voice turn latency role=%s stage_ms=%s", item.role, stage_ms)
 
 
 # =====================================================================
@@ -374,7 +399,7 @@ def prewarm(proc: JobProcess):
     try:
         proc.userdata["vad"] = silero.VAD.load(
             min_speech_duration=0.1,
-            min_silence_duration=0.6,
+            min_silence_duration=0.35,
             activation_threshold=0.55,
         )
         logger.info("Silero VAD successfully prewarmed")
@@ -419,6 +444,7 @@ async def entrypoint(ctx: JobContext):
         turn_handling=build_turn_handling_options(),
         allow_interruptions=True,
     )
+    session.on("conversation_item_added", log_voice_turn_latency)
 
     # Start the agent session in the room immediately.
     # sync_transcription=False bypasses TranscriptSynchronizer's CPU STFT loop,

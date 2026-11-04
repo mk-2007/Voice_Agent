@@ -421,6 +421,8 @@ npm run dev
 
 Open [`http://127.0.0.1:5173`](http://127.0.0.1:5173) in your browser. Allow microphone permissions and click **"Start Voice Call"** to speak with Rachel.
 
+The voice worker logs per-turn timing stages (`end_of_turn`, `transcription`, `llm_first_token`, `tts_first_audio`, and `end_to_end`) in milliseconds without logging transcript text. Use these timings to distinguish endpointing delay from provider response time when diagnosing slow calls.
+
 ---
 
 ## ⚙️ Configuration (`.env`)
