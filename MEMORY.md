@@ -37,8 +37,8 @@
 - **Model Standardization**: `gemini-3.5-flash-lite` with ~1.1s TTFT, 0 quota 503 errors, and reliable tool-calling support.
 - **CPU STFT Loop Bypass**: Set `room_output_options=room_io.RoomOutputOptions(sync_transcription=False)`, eliminating the 8-second event loop audio stutter and freezes on Windows.
 - **Natural Conversational Flow & Barge-In**:
-  - `min_endpointing_delay = 0.8s` (natural human conversational breathing pause)
-  - `max_endpointing_delay = 2.5s` (allows patient to formulate complex responses without being rushed)
+  - `min_endpointing_delay = 0.45s` (keeps short response pauses conversational)
+  - `max_endpointing_delay = 1.6s` (allows longer patient pauses without excessive response lag)
   - `min_interruption_duration = 0.6s` (prevents stray noises or mic clicks from interrupting Rachel)
   - `min_interruption_words = 2` (minimum 2 recognizable words required before interrupting)
   - `resume_false_interruption = True` (agent resumes speaking if caller coughs or makes a brief noise)
@@ -104,7 +104,7 @@
 
 2. **Mid-Sentence Speaking & Interruption Glitch**:
    - *Cause*: Browser microphone was opened without WebRTC hardware constraints, causing Rachel's voice from device speakers to echo into the microphone. Silero VAD treated the echo as caller speech and interrupted Rachel mid-sentence.
-   - *Fix*: Added `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }` in `VoicePanel.tsx`, increased silence endpointing delays to $0.8\text{s} - 2.5\text{s}$, set `min_interruption_duration = 0.6s`, `min_interruption_words = 2`, and enabled `resume_false_interruption = True`.
+   - *Fix*: Added `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }` in `VoicePanel.tsx`, tuned endpointing to $0.45\text{s} - 1.6\text{s}$, set `min_interruption_duration = 0.6s`, `min_interruption_words = 2`, and enabled `resume_false_interruption = True`.
 
 3. **Page Auto-Scrolling Down Forcibly**:
    - *Cause*: `useEffect` called `transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' })` on every streaming word token, violently scrolling the outer browser window to the bottom.

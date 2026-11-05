@@ -23,7 +23,7 @@ A **production-grade Clinical AI Receptionist ("Rachel")** — a real-time conve
 | **Phase 1: Foundation & Data Architecture** | ✅ COMPLETE | 8 SQLAlchemy models, repository pattern, Pydantic v2 schemas, SQLite/Postgres DB setup |
 | **Phase 2: Controlled Agent Tools** | ✅ COMPLETE | 6 async clinical tools (`check_doctor_availability`, `book_clinical_appointment`, `lookup_doctor_information`, `lookup_clinic_information`, `cancel_existing_appointment`, `reschedule_existing_appointment`) |
 | **Phase 3: Conversation State & Guardrails** | ✅ COMPLETE | 12-state conversation manager, emergency 911 escalation, medical advice refusal, privacy filter, anti-hallucination validation |
-| **Phase 4: LiveKit Voice Agent Pipeline** | ✅ COMPLETE | LiveKit Agents v1.8 worker, Gemini 3.5 Flash Lite LLM, Deepgram Nova-2 STT, ElevenLabs TTS, Silero VAD, natural barge-in (0.8s–2.5s endpointing) |
+| **Phase 4: LiveKit Voice Agent Pipeline** | ✅ COMPLETE | LiveKit Agents v1.8 worker, Gemini 3.5 Flash Lite LLM, Deepgram Nova-2 STT, ElevenLabs TTS, Silero VAD, natural barge-in (0.45s–1.6s endpointing) |
 | **Phase 5: Autonomous Evaluation Engine** | ✅ COMPLETE | 15 deterministic scenarios (TC-001–TC-029), simulated patient persona, ground-truth DB verifier, 100% pass rate in 2.97s |
 | **Phase 6: FastAPI REST API & Token Service** | ✅ COMPLETE | FastAPI with CORS, appointment routes, LiveKit room token generator & named-agent dispatcher |
 | **Phase 7: React Frontend & Lumora Overhaul** | ✅ COMPLETE | React 19 + TypeScript + Vite, Liquid Voice Orb Canvas, 24-band spectrum, live doctor schedule grid, hardware AEC, scoped transcript |
@@ -43,7 +43,7 @@ A **production-grade Clinical AI Receptionist ("Rachel")** — a real-time conve
 
 2. **Mid-Sentence Speaking & Interruption Glitch**:
    - Browser microphone was opened without WebRTC hardware constraints, causing Rachel's voice from device speakers to echo into the microphone. Silero VAD treated the echo as caller speech and interrupted Rachel mid-sentence.
-   - **Fix**: Added `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }` in `VoicePanel.tsx`, increased silence endpointing delays to $0.8\text{s} - 2.5\text{s}$, set `min_interruption_duration = 0.6s`, `min_interruption_words = 2`, and enabled `resume_false_interruption = True`.
+   - **Fix**: Added `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }` in `VoicePanel.tsx`, tuned endpointing to $0.45\text{s} - 1.6\text{s}$, set `min_interruption_duration = 0.6s`, `min_interruption_words = 2`, and enabled `resume_false_interruption = True`.
 
 3. **Page Auto-Scrolling Down Forcibly**:
    - `useEffect` called `transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' })` on every streaming word token, violently scrolling the outer browser window to the bottom.
