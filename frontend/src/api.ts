@@ -30,6 +30,17 @@ export type EvaluationDetail = EvaluationRun & {
   }>
 }
 
+export type CallEvaluation = {
+  call_evaluation_id: string
+  data_scope: 'TEST' | 'CLINIC'
+  execution_status: string
+  started_at: string
+  completed_at?: string | null
+  action_type?: string | null
+  action_count: number
+  findings: string[]
+}
+
 export type Doctor = {
   doctor_id: string
   doctor_name: string
@@ -62,6 +73,31 @@ export type LiveKitCredentials = {
   room_name: string
   participant_identity: string
   participant_token: string
+  live_call_test_id?: string | null
+  call_evaluation_id: string
+  data_scope: 'TEST' | 'CLINIC'
+}
+
+export function callScopeLabel(scope: CallEvaluation['data_scope']): string {
+  return scope === 'TEST' ? 'ISOLATED TEST DATA' : 'CLINIC DATABASE'
+}
+
+export function describeCallFinding(code: string): string {
+  const descriptions: Record<string, string> = {
+    transcript_missing: 'No usable call transcript was received, so this call could not be checked.',
+    appointment_change_not_recorded_for_call: 'The transcript suggests a booking change, but no matching database change was recorded for this call.',
+    appointment_record_missing: 'The appointment record linked to this call could not be found.',
+    appointment_status_mismatch: 'The saved appointment status does not match the requested action.',
+    database_details_do_not_match_action: 'The saved patient, doctor, date, or time does not match the appointment action.',
+    patient_name_not_in_transcript: 'The saved patient name was not found in the call transcript.',
+    doctor_not_confirmed_in_transcript: 'The doctor was not clearly confirmed in the receptionist’s response.',
+    date_not_confirmed_in_transcript: 'The appointment date was not clearly confirmed in the receptionist’s response.',
+    time_not_confirmed_in_transcript: 'The appointment time was not clearly confirmed in the receptionist’s response.',
+    appointment_confirmation_not_heard: 'A clear confirmation of the appointment change was not found in the receptionist’s response.',
+    test_worker_unavailable: 'The isolated test voice worker was unavailable.',
+    voice_worker_unavailable: 'The voice worker was unavailable.',
+  }
+  return descriptions[code] ?? 'The call needs review.'
 }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')

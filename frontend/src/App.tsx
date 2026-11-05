@@ -3,11 +3,22 @@ import Dashboard from './Dashboard'
 import VoicePanel from './VoicePanel'
 import DoctorCards from './DoctorCards'
 import LiveCalendarView from './LiveCalendarView'
+import { api, type CallEvaluation } from './api'
 
 type Page = 'voice' | 'calendar' | 'evaluations'
 
 export default function App() {
   const [page, setPage] = useState<Page>('voice')
+  const [liveCallTestId, setLiveCallTestId] = useState<string | null>(null)
+
+  const startLiveCallTest = async () => {
+    const testRun = await api<CallEvaluation>('/api/v1/evaluations/live-calls', {
+      method: 'POST',
+      body: '{}',
+    })
+    setLiveCallTestId(testRun.call_evaluation_id)
+    setPage('voice')
+  }
 
   return (
     <div className="app-shell">
@@ -91,14 +102,18 @@ export default function App() {
                 ? 'Speak naturally to check doctor schedules, book or reschedule appointments, and get instant answers about clinic services.'
                 : page === 'calendar'
                 ? 'View appointments saved in the clinic database. The backend coordinates bookings with its configured calendar; this page is not a direct Google Calendar feed.'
-                : 'Deterministic multi-turn simulated patient evaluations scoring task outcomes, safety guardrails, and tool execution.'}
+                : 'Keep scripted sandbox scenarios, isolated test calls, and read-only checks of clinic calls clearly separate.'}
             </p>
           </div>
         </div>
 
         {page === 'voice' && (
           <>
-            <VoicePanel onOpenCalendar={() => setPage('calendar')} />
+            <VoicePanel
+              onOpenCalendar={() => setPage('calendar')}
+              liveCallTestId={liveCallTestId}
+              onLiveCallTestCompleted={() => setLiveCallTestId(null)}
+            />
             <DoctorCards />
           </>
         )}
@@ -108,7 +123,7 @@ export default function App() {
         )}
 
         {page === 'evaluations' && (
-          <Dashboard />
+          <Dashboard onStartLiveCallTest={startLiveCallTest} />
         )}
       </main>
 

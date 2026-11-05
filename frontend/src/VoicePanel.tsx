@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Room, RoomEvent, Track, type TranscriptionSegment } from 'livekit-client'
-import { api, type LiveKitCredentials } from './api'
+import {
+  api,
+  callScopeLabel,
+  describeCallFinding,
+  type CallEvaluation,
+  type LiveKitCredentials,
+} from './api'
 import LiquidVoiceOrb, { type OrbState } from './LiquidVoiceOrb'
 import AudioSpectrum from './AudioSpectrum'
 import PromptChips from './PromptChips'
@@ -9,12 +15,22 @@ export type TranscriptLine = { id: string; speaker: string; text: string; final:
 
 export interface VoicePanelProps {
   onOpenCalendar?: () => void
+  liveCallTestId?: string | null
+  onLiveCallTestCompleted?: (result: CallEvaluation) => void
 }
 
-export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
+export default function VoicePanel({
+  onOpenCalendar,
+  liveCallTestId = null,
+  onLiveCallTestCompleted,
+}: VoicePanelProps) {
   const roomRef = useRef<Room | null>(null)
   const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const timerIntervalRef = useRef<number | null>(null)
+  const verificationTimerRef = useRef<number | null>(null)
+  const testTranscriptRef = useRef(new Map<string, { speaker: string; text: string }>())
+  const callEvaluationIdRef = useRef<string | null>(null)
+  const verificationStartedRef = useRef(false)
   const transcriptStreamRef = useRef<HTMLDivElement | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -28,6 +44,21 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
   const [error, setError] = useState('')
   const [lines, setLines] = useState<TranscriptLine[]>([])
   const [callEndedAlert, setCallEndedAlert] = useState(false)
+  const [liveTestStatus, setLiveTestStatus] = useState<CallEvaluation | null>(null)
+  const [liveTestError, setLiveTestError] = useState('')
+
+  useEffect(() => {
+    if (liveCallTestId) {
+      setLiveTestStatus({
+        call_evaluation_id: liveCallTestId,
+        data_scope: 'TEST',
+        execution_status: 'IN_PROGRESS',
+        started_at: new Date().toISOString(),
+        action_count: 0,
+        findings: [],
+      })
+    }
+  }, [liveCallTestId])
 
   // Auto-scroll transcript container to bottom without scrolling outer window
   useEffect(() => {
@@ -97,6 +128,7 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
     })
     audioElements.current.clear()
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+    if (verificationTimerRef.current) clearTimeout(verificationTimerRef.current)
   }, [])
 
   // Timer for active call
@@ -121,11 +153,41 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
     setMicMuted(nextMuted)
   }
 
+  const verifyLiveCall = useCallback(async () => {
+    const evaluationId = callEvaluationIdRef.current
+    if (!evaluationId || verificationStartedRef.current) return
+    verificationStartedRef.current = true
+    setLiveTestError('')
+    setLiveTestStatus(current => current ? { ...current, execution_status: 'VERIFYING' } : current)
+    await new Promise(resolve => window.setTimeout(resolve, 900))
+    const transcript = Array.from(testTranscriptRef.current.values())
+      .map(line => `${line.speaker}: ${line.text}`)
+      .join('\n')
+    try {
+      const result = await api<CallEvaluation>(
+        `/api/v1/evaluations/live-calls/${evaluationId}/verify`,
+        { method: 'POST', body: JSON.stringify({ transcript }) },
+      )
+      setLiveTestStatus(result)
+      onLiveCallTestCompleted?.(result)
+    } catch (cause) {
+      setLiveTestError(cause instanceof Error ? cause.message : 'Could not verify this live call.')
+      verificationStartedRef.current = false
+    }
+  }, [onLiveCallTestCompleted])
+
   const connect = async () => {
     setConnecting(true)
     setError('')
     setLines([])
     setCallEndedAlert(false)
+    testTranscriptRef.current.clear()
+    verificationStartedRef.current = false
+    callEvaluationIdRef.current = null
+    setLiveTestStatus(null)
+    if (liveCallTestId) {
+      setLiveTestError('')
+    }
     let room: Room | null = null
     try {
       // 1. Ensure user has granted microphone permission first before connecting
@@ -149,7 +211,19 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
       }
 
       // 2. Obtain token and trigger LiveKit agent worker dispatch
-      const creds = await api<LiveKitCredentials>('/api/v1/livekit/token', { method: 'POST', body: '{}' })
+      const creds = await api<LiveKitCredentials>('/api/v1/livekit/token', {
+        method: 'POST',
+        body: JSON.stringify({ live_call_test_id: liveCallTestId }),
+      })
+      callEvaluationIdRef.current = creds.call_evaluation_id
+      setLiveTestStatus({
+        call_evaluation_id: creds.call_evaluation_id,
+        data_scope: creds.data_scope,
+        execution_status: 'IN_PROGRESS',
+        started_at: new Date().toISOString(),
+        action_count: 0,
+        findings: [],
+      })
       room = new Room({ adaptiveStream: true, dynacast: true })
       roomRef.current = room
 
@@ -181,6 +255,9 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
         })
         audioElements.current.clear()
         setCallEndedAlert(true)
+        verificationTimerRef.current = window.setTimeout(() => {
+          void verifyLiveCall()
+        }, 900)
       })
 
       room.on(RoomEvent.ActiveSpeakersChanged, speakers => {
@@ -203,6 +280,7 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
               final: segment.final,
               timestamp: now,
             }
+            testTranscriptRef.current.set(segment.id, { speaker: item.speaker, text: item.text })
             const existing = next.findIndex(line => line.id === item.id)
             if (existing >= 0) next[existing] = item
             else next.push(item)
@@ -363,6 +441,48 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
         <span>End-to-End Encrypted WebRTC • HIPAA Compliant Audio Channel</span>
       </div>
 
+      {liveCallTestId && (
+        <div className="live-test-status" role="status">
+          <strong>Isolated test call selected.</strong>
+          <span>
+            This call uses the test worker and isolated database. It cannot change clinic appointments
+            and does not use Google Calendar. End the call to check any booking or reschedule.
+          </span>
+        </div>
+      )}
+      {liveTestStatus && (
+        <div className={`live-test-status ${liveTestStatus.execution_status === 'PASS' ? 'is-pass' : liveTestStatus.execution_status === 'FLAG' ? 'is-flag' : ''}`} role="status">
+          <strong>
+            {liveTestStatus.execution_status === 'IN_PROGRESS'
+              ? `Call check active · ${callScopeLabel(liveTestStatus.data_scope)}`
+              : liveTestStatus.execution_status === 'PASS'
+              ? 'PASS · appointment details match'
+              : liveTestStatus.execution_status === 'FLAG'
+              ? 'FLAG · review this call'
+              : liveTestStatus.execution_status === 'NO_CHANGE'
+              ? 'NO APPOINTMENT CHANGE'
+              : 'Call check in progress'}
+          </strong>
+          {liveTestStatus.execution_status === 'NO_CHANGE' && (
+            <span>No booking or reschedule was requested; no appointment change was expected.</span>
+          )}
+          {liveTestStatus.action_type && (
+            <span>
+              {liveTestStatus.action_type.replaceAll('_', ' ')} · {liveTestStatus.action_count} appointment record(s) checked
+            </span>
+          )}
+          {liveTestStatus.findings.length > 0 && (
+            <small>{liveTestStatus.findings.map(describeCallFinding).join(' ')}</small>
+          )}
+        </div>
+      )}
+      {liveTestError && <div className="inline-error" role="alert">{liveTestError}</div>}
+      {liveTestStatus && liveTestError && (
+        <button className="transcript-action-btn" onClick={() => void verifyLiveCall()}>
+          Retry call check
+        </button>
+      )}
+
       {error && (
         <div className="inline-error" role="alert">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
@@ -374,7 +494,7 @@ export default function VoicePanel({ onOpenCalendar }: VoicePanelProps) {
         <div className="call-sync-toast" role="status">
           <div className="toast-content">
             <span className="toast-dot" />
-            <span>Call ended: Any scheduled appointment has been verified in the clinic DB and synchronized with Google Calendar.</span>
+            <span>Call ended: the transcript is being checked against the database for this call.</span>
           </div>
           {onOpenCalendar && (
             <button className="btn-view-cal-toast" onClick={onOpenCalendar}>

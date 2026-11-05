@@ -51,6 +51,9 @@ except ImportError:
     elevenlabs = None
 
 from config.settings import settings
+from backend.database.connection import init_db
+from backend.services.live_call_verifier import database_urls_match
+from backend.call_context import current_voice_call_id
 from backend.agent.prompts import RECEPTIONIST_SYSTEM_PROMPT
 from backend.tools.clinical_tools import (
     get_clinic_information,
@@ -90,8 +93,8 @@ def build_llm():
             raise RuntimeError("LLM_PROVIDER is gemini but GEMINI_API_KEY is not configured")
         model = settings.GEMINI_MODEL
         if model == "gemini-3.8-flash":
-            logger.warning("Gemini 3.8 Flash is currently returning overloaded responses; using tested gemini-3.5-flash")
-            model = "gemini-3.5-flash"
+            logger.warning("Gemini 3.8 Flash is currently returning overloaded responses; using tested gemini-3.5-flash-lite")
+            model = "gemini-3.5-flash-lite"
         logger.info(f"Using Gemini LLM: {model}")
         return openai.LLM(
             model=model,
@@ -163,14 +166,14 @@ def build_turn_handling_options() -> TurnHandlingOptions:
     return {
         "endpointing": EndpointingOptions(
             mode="fixed",
-            min_delay=0.4,
-            max_delay=1.2,
+            min_delay=0.45,
+            max_delay=1.6,
         ),
         "interruption": InterruptionOptions(
             enabled=True,
             mode="vad",
-            min_duration=0.4,
-            min_words=1,
+            min_duration=0.6,
+            min_words=2,
             resume_false_interruption=True,
         ),
     }
@@ -409,6 +412,13 @@ def prewarm(proc: JobProcess):
 
 async def entrypoint(ctx: JobContext):
     """LiveKit agent worker lifecycle entry point."""
+    if settings.LIVEKIT_AGENT_NAME == settings.LIVE_TEST_AGENT_NAME:
+        if (
+            not settings.GOOGLE_CALENDAR_SANDBOX
+            or not database_urls_match(settings.DATABASE_URL, settings.LIVE_TEST_DATABASE_URL)
+        ):
+            raise RuntimeError("Live test worker must use its isolated database and mock calendar")
+    init_db()
     logger.info(f"Connecting to room: {ctx.room.name}")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
@@ -449,29 +459,33 @@ async def entrypoint(ctx: JobContext):
     # Start the agent session in the room immediately.
     # sync_transcription=False bypasses TranscriptSynchronizer's CPU STFT loop,
     # completely eliminating audio stutter and event loop freezes on Windows.
-    await session.start(
-        agent,
-        room=ctx.room,
-        room_output_options=room_io.RoomOutputOptions(sync_transcription=False),
-    )
-    logger.info(f"Agent session successfully started in room: {ctx.room.name} (STFT bypassed)")
-
-    # Keep worker alive for call duration and cleanly exit when call ends
-    disconnect_future = asyncio.get_running_loop().create_future()
-
-    def _mark_done(*_):
-        if not disconnect_future.done():
-            disconnect_future.set_result(None)
-
-    ctx.room.on("disconnected", _mark_done)
-    ctx.room.on("participant_disconnected", _mark_done)
-    session.on("close", _mark_done)
-
+    call_context_token = current_voice_call_id.set(ctx.room.name)
     try:
-        await disconnect_future
-        logger.info(f"Room {ctx.room.name} call ended, closing agent session.")
+        await session.start(
+            agent,
+            room=ctx.room,
+            room_output_options=room_io.RoomOutputOptions(sync_transcription=False),
+        )
+        logger.info(f"Agent session successfully started in room: {ctx.room.name} (STFT bypassed)")
+
+        # Keep worker alive for call duration and cleanly exit when call ends
+        disconnect_future = asyncio.get_running_loop().create_future()
+
+        def _mark_done(*_):
+            if not disconnect_future.done():
+                disconnect_future.set_result(None)
+
+        ctx.room.on("disconnected", _mark_done)
+        ctx.room.on("participant_disconnected", _mark_done)
+        session.on("close", _mark_done)
+
+        try:
+            await disconnect_future
+            logger.info(f"Room {ctx.room.name} call ended, closing agent session.")
+        finally:
+            await session.aclose()
     finally:
-        await session.aclose()
+        current_voice_call_id.reset(call_context_token)
 
 
 def main():

@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from config.settings import Settings
 from backend.agent import voice_agent
 from backend.agent.voice_agent import (
     create_clinical_agent,
@@ -26,6 +27,11 @@ def test_agent_instantiation():
     agent = create_clinical_agent()
     assert agent is not None
     assert len(CLINICAL_TOOLS) == 7
+
+
+def test_gemini_is_default_llm_provider(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert Settings(_env_file=None).LLM_PROVIDER == "gemini"
 
 
 def test_agent_instructions_include_clinic_local_date(monkeypatch):
@@ -192,7 +198,7 @@ def test_gemini_model_fallback_normalization(monkeypatch):
     )
 
     assert build_llm() is expected
-    assert captured["model"] == "gemini-3.5-flash"
+    assert captured["model"] == "gemini-3.5-flash-lite"
     assert captured["timeout"] == 20.0
 
 
@@ -222,10 +228,10 @@ def test_groq_provider_has_bounded_request_timeout(monkeypatch):
 
 def test_voice_turn_handling_allows_stt_to_finish():
     options = voice_agent.build_turn_handling_options()
-    assert options["endpointing"]["min_delay"] == 0.4
-    assert options["endpointing"]["max_delay"] == 1.2
-    assert options["interruption"]["min_duration"] == 0.4
-    assert options["interruption"]["min_words"] == 1
+    assert options["endpointing"]["min_delay"] == 0.45
+    assert options["endpointing"]["max_delay"] == 1.6
+    assert options["interruption"]["min_duration"] == 0.6
+    assert options["interruption"]["min_words"] == 2
 
 
 def test_voice_latency_logging_excludes_transcript_and_reports_pipeline_stages(caplog):

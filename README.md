@@ -40,7 +40,7 @@
 
 > [!NOTE]
 > **What makes Lumora unique?**
-> Standard voice bots suffer from two major problems: they interrupt themselves due to audio echo from computer speakers, and they rush callers with rigid 300ms turn timeouts. Lumora solves both with hardware WebRTC Acoustic Echo Cancellation (AEC) and adaptive conversational endpointing ($0.8\text{s} - 2.5\text{s}$).
+> Standard voice bots can interrupt themselves due to audio echo or mistake brief noises for speech, and overly long silence windows add conversational lag. Lumora uses WebRTC Acoustic Echo Cancellation (AEC), a 0.6s / two-word barge-in threshold, and 0.45s–1.6s endpointing.
 
 | Capability | Engineering Implementation | Patient Experience |
 | :--- | :--- | :--- |
@@ -91,7 +91,7 @@ flowchart TD
 
     subgraph Worker["🤖 VOICE AGENT WORKER (LiveKit Agents 1.8)"]
         VAD["Silero VAD (0.55 Activation Threshold)"]:::workerStyle
-        BargeIn["Conversational Flow (Endpointing 0.8s - 2.5s)"]:::workerStyle
+        BargeIn["Conversational Flow (Endpointing 0.45s - 1.6s)"]:::workerStyle
         Session["AgentSession (Live Turn Coordinator)"]:::workerStyle
     end
 
@@ -411,6 +411,24 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```powershell
 python backend/agent/voice_agent.py start
 ```
+
+**Optional — isolated live-call test worker:** This worker uses `LIVE_TEST_DATABASE_URL` and a mock calendar. It does not read or write the clinic database or Google Calendar. Start it in a second worker terminal:
+```powershell
+$env:DATABASE_URL = "sqlite:///./clinical_live_test.db"
+$env:GOOGLE_CALENDAR_SANDBOX = "true"
+$env:LIVEKIT_AGENT_NAME = "clinical-voice-agent-test"
+python backend/agent/voice_agent.py start
+```
+
+The Evaluation & Analytics dashboard separates three kinds of results:
+
+- **Scripted scenarios** are predefined simulated conversations using disposable records and a mock calendar. They are not voice calls and never touch either application database.
+- **Start isolated test call** creates a real voice call on the test worker. Any booking, reschedule, or cancellation is stored in `clinical_live_test.db`; it does not appear in the clinic calendar or clinic appointment database.
+- **Regular voice calls** are checked automatically after disconnect against the clinic database. The evaluator reads the call-linked appointment-action audit and record, but does not change appointment records or fetch Google Calendar data. Normal clinic booking behavior may still synchronize with Google Calendar.
+
+The call link is an opaque LiveKit room identifier added to appointment-action audit metadata. The verifier checks the exact affected record's patient name, doctor, date, time, and status against the action and what Rachel confirmed in the transcript. A request without a matching recorded change is **FLAG**; a call with no booking, reschedule, or cancellation is **NO APPOINTMENT CHANGE**. The transcript is used in memory and discarded; only the data scope, status, action type/count, and generic finding codes are saved. No extra Gemini/ElevenLabs evaluation call is made; the live voice call still uses the configured providers and their available quotas.
+
+For a video, start the API and both workers, open **Evaluation & Analytics**, click **Start isolated test call**, then make a clearly fictional booking in the voice page and hang up. Show the **ISOLATED TEST DATA** result in the tester. The **CLINIC DATABASE** label is reserved for ordinary app voice calls and means the appointment was checked in place; do not use patient information in a demo. The isolated test booking is intentionally not shown as a clinic appointment.
 
 **Terminal 3 — Frontend Web Client:**
 ```powershell

@@ -20,6 +20,7 @@ from backend.database.models import (
     AuditLog,
     generate_uuid,
 )
+from backend.call_context import current_voice_call_id
 
 
 class PatientRepository:
@@ -167,13 +168,21 @@ class AuditRepository:
         result: str = "SUCCESS",
         metadata: Optional[dict] = None,
     ) -> AuditLog:
+        audit_metadata = dict(metadata or {})
+        call_id = current_voice_call_id.get()
+        if call_id and resource_type == "APPOINTMENT" and action in {
+            "BOOK_APPOINTMENT",
+            "RESCHEDULE_APPOINTMENT",
+            "CANCEL_APPOINTMENT",
+        }:
+            audit_metadata["call_id"] = call_id
         audit = AuditLog(
             actor=actor,
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
             result=result,
-            metadata_json=json.dumps(metadata or {}),
+            metadata_json=json.dumps(audit_metadata),
         )
         self.db.add(audit)
         self.db.commit()

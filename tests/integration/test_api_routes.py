@@ -1,6 +1,7 @@
 """Integration tests for the FastAPI v1 contract using an isolated SQLite DB."""
 
 import json
+from contextlib import contextmanager
 import pytest
 from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
 from backend.database.connection import get_db
-from backend.database.models import Base, Doctor
+from backend.database.models import Base, Doctor, LiveCallEvaluation
 from backend.main import app
 from backend.services.calendar_service import get_calendar_service, MockCalendarService
 from config.settings import settings
@@ -143,6 +144,94 @@ def test_evaluation_routes(client):
     assert client.get("/api/v1/evaluations/runs/missing").status_code == 404
 
 
+def test_live_call_tester_requires_a_separate_database(client, monkeypatch):
+    monkeypatch.setattr(settings, "DATABASE_URL", "sqlite:///./clinical_agent.db")
+    monkeypatch.setattr(settings, "LIVE_TEST_DATABASE_URL", "sqlite:///./clinical_agent.db")
+    monkeypatch.setattr(settings, "LIVEKIT_AGENT_NAME", "clinic-worker")
+    monkeypatch.setattr(settings, "LIVE_TEST_AGENT_NAME", "clinic-test-worker")
+
+    response = client.post("/api/v1/evaluations/live-calls")
+
+    assert response.status_code == 503
+    assert "separate LIVE_TEST_DATABASE_URL" in response.json()["detail"]
+
+
+def test_live_call_verification_saves_only_minimal_result(client, monkeypatch):
+    monkeypatch.setattr(settings, "DATABASE_URL", "sqlite:///./clinical_agent.db")
+    monkeypatch.setattr(settings, "LIVE_TEST_DATABASE_URL", "sqlite:///./clinical_live_test.db")
+    monkeypatch.setattr(settings, "LIVEKIT_AGENT_NAME", "clinic-worker")
+    monkeypatch.setattr(settings, "LIVE_TEST_AGENT_NAME", "clinic-test-worker")
+
+    started = client.post("/api/v1/evaluations/live-calls")
+    assert started.status_code == 200, started.text
+    test_id = started.json()["call_evaluation_id"]
+
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    evaluation = db.query(LiveCallEvaluation).filter_by(
+        call_evaluation_id=test_id
+    ).one()
+    evaluation.call_room_name = "isolated-test-room"
+    db.commit()
+    db.close()
+    db_generator.close()
+
+    @contextmanager
+    def use_test_database():
+        db_generator = app.dependency_overrides[get_db]()
+        db = None
+        try:
+            db = next(db_generator)
+            yield db
+        finally:
+            if db is not None:
+                db.close()
+            db_generator.close()
+
+    monkeypatch.setattr("backend.api.routes.v1.live_test_database", use_test_database)
+    response = client.post(
+        f"/api/v1/evaluations/live-calls/{test_id}/verify",
+        json={"transcript": "You: What time does the clinic close? Rachel: We close at 5 PM."},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["data_scope"] == "TEST"
+    assert result["execution_status"] == "NO_CHANGE"
+    assert result["findings"] == []
+    assert result["action_count"] == 0
+    assert "clinic close" not in response.text.lower()
+    assert client.get("/api/v1/evaluations/live-calls").json()[0] == result
+    assert client.post(
+        f"/api/v1/evaluations/live-calls/{test_id}/verify",
+        json={"transcript": "retry"},
+    ).status_code == 409
+
+
+def test_regular_call_check_does_not_require_test_or_calendar_configuration(client, monkeypatch):
+    monkeypatch.setattr(settings, "LIVE_TEST_DATABASE_URL", settings.DATABASE_URL)
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    evaluation = LiveCallEvaluation(
+        call_room_name="clinic-call-room",
+        data_scope="CLINIC",
+    )
+    db.add(evaluation)
+    db.commit()
+    evaluation_id = evaluation.call_evaluation_id
+    db.close()
+    db_generator.close()
+
+    response = client.post(
+        f"/api/v1/evaluations/live-calls/{evaluation_id}/verify",
+        json={"transcript": "You: What time does the clinic close? Rachel: We close at 5 PM."},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data_scope"] == "CLINIC"
+    assert response.json()["execution_status"] == "NO_CHANGE"
+
+
 def test_livekit_token_requires_configuration_and_uses_fresh_room(client, monkeypatch):
     monkeypatch.setattr(settings, "LIVEKIT_URL", "")
     assert client.post("/api/v1/livekit/token", json={}).status_code == 503
@@ -168,7 +257,7 @@ def test_livekit_token_requires_configuration_and_uses_fresh_room(client, monkey
 
     monkeypatch.setattr("backend.api.routes.v1.livekit_api.LiveKitAPI", create_livekit_client)
     first = client.post("/api/v1/livekit/token", json={})
-    second = client.post("/api/v1/livekit/token", json={})
+    second = client.post("/api/v1/livekit/token")
     assert first.status_code == 200
     assert first.json()["room_name"] != second.json()["room_name"]
     assert "test-secret-that-is-at-least-thirty-two-bytes" not in first.text
@@ -184,3 +273,45 @@ def test_livekit_token_requires_configuration_and_uses_fresh_room(client, monkey
     assert failed.status_code == 503
     assert "upstream detail" not in failed.text
     failed_client.aclose.assert_awaited_once()
+
+
+def test_live_call_token_dispatches_to_isolated_worker(client, monkeypatch):
+    monkeypatch.setattr(settings, "LIVEKIT_URL", "wss://example.livekit.cloud")
+    monkeypatch.setattr(settings, "LIVEKIT_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "LIVEKIT_API_SECRET", "test-secret-that-is-at-least-thirty-two-bytes")
+    monkeypatch.setattr(settings, "DATABASE_URL", "sqlite:///./clinical_agent.db")
+    monkeypatch.setattr(settings, "LIVE_TEST_DATABASE_URL", "sqlite:///./clinical_live_test.db")
+    monkeypatch.setattr(settings, "LIVEKIT_AGENT_NAME", "clinic-worker")
+    monkeypatch.setattr(settings, "LIVE_TEST_AGENT_NAME", "clinic-test-worker")
+    monkeypatch.setattr(settings, "GOOGLE_CALENDAR_SANDBOX", False)
+
+    class FakeDispatch:
+        def __init__(self):
+            self.create_dispatch = AsyncMock()
+
+    class FakeLiveKitAPI:
+        def __init__(self, *_args):
+            self.agent_dispatch = FakeDispatch()
+            self.aclose = AsyncMock()
+
+    instances = []
+
+    def create_client(*args):
+        instance = FakeLiveKitAPI(*args)
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr("backend.api.routes.v1.livekit_api.LiveKitAPI", create_client)
+    test_run = client.post("/api/v1/evaluations/live-calls")
+    assert test_run.status_code == 200, test_run.text
+
+    token = client.post("/api/v1/livekit/token", json={
+        "live_call_test_id": test_run.json()["call_evaluation_id"],
+    })
+
+    assert token.status_code == 200, token.text
+    assert token.json()["live_call_test_id"] == test_run.json()["call_evaluation_id"]
+    assert token.json()["data_scope"] == "TEST"
+    assert token.json()["call_evaluation_id"] == test_run.json()["call_evaluation_id"]
+    dispatch_request = instances[0].agent_dispatch.create_dispatch.call_args.args[0]
+    assert dispatch_request.agent_name == "clinic-test-worker"

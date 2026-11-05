@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type EvaluationDetail, type EvaluationRun, type EvaluationScenario } from './api'
+import {
+  api,
+  type EvaluationDetail,
+  type EvaluationRun,
+  type EvaluationScenario,
+  type CallEvaluation,
+  callScopeLabel,
+  describeCallFinding,
+} from './api'
 
 function readTrace(value?: string | null): {
   transcript?: Array<{ speaker: string; text: string }>
@@ -15,12 +23,18 @@ function readTrace(value?: string | null): {
   }
 }
 
-export default function Dashboard() {
+interface DashboardProps {
+  onStartLiveCallTest: () => Promise<void>
+}
+
+export default function Dashboard({ onStartLiveCallTest }: DashboardProps) {
   const [scenarios, setScenarios] = useState<EvaluationScenario[]>([])
   const [runs, setRuns] = useState<EvaluationRun[]>([])
+  const [liveCallEvaluations, setLiveCallEvaluations] = useState<CallEvaluation[]>([])
   const [selected, setSelected] = useState<EvaluationDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [startingLiveTest, setStartingLiveTest] = useState(false)
   const [runningLabel, setRunningLabel] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL')
   const [error, setError] = useState('')
@@ -28,12 +42,14 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [scenarioRows, runRows] = await Promise.all([
+      const [scenarioRows, runRows, callEvaluationRows] = await Promise.all([
         api<EvaluationScenario[]>('/api/v1/evaluations/scenarios'),
         api<EvaluationRun[]>('/api/v1/evaluations/runs'),
+        api<CallEvaluation[]>('/api/v1/evaluations/live-calls'),
       ])
       setScenarios(scenarioRows)
       setRuns(runRows)
+      setLiveCallEvaluations(callEvaluationRows)
       if (runRows.length > 0 && !selected) {
         const first = await api<EvaluationDetail>(`/api/v1/evaluations/runs/${runRows[0].evaluation_run_id}`)
         setSelected(first)
@@ -73,6 +89,18 @@ export default function Dashboard() {
     }
   }
 
+  const startLiveTest = async () => {
+    setStartingLiveTest(true)
+    setError('')
+    try {
+      await onStartLiveCallTest()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not start the live call test.')
+    } finally {
+      setStartingLiveTest(false)
+    }
+  }
+
   const openRun = async (id: string) => {
     try {
       setSelected(await api<EvaluationDetail>(`/api/v1/evaluations/runs/${id}`))
@@ -101,7 +129,7 @@ export default function Dashboard() {
             BENCHMARK & CLINICAL SAFETY
           </span>
           <h2 id="dashboard-title">Autonomous Evaluation Engine</h2>
-          <p>Run scripted patient scenarios and inspect the conversation, tool calls, and verified results.</p>
+          <p>Scripted scenarios are sandbox simulations. Live calls are checked against the database they actually use.</p>
         </div>
         <button
           className="button button-call-start"
@@ -123,18 +151,56 @@ export default function Dashboard() {
       </div>
 
       <div className="evaluation-notice" role="note">
-        <strong>Simulation, not a live phone-call test.</strong>
+        <strong>Scripted scenarios — not real calls.</strong>
         <span>
-          Each scripted scenario runs through the deterministic conversation manager, uses a disposable
-          database and mock calendar, then checks the expected outcome. It does not place calls or write to
-          your Google Calendar.
+          These predefined conversations use a disposable database and mock calendar. They do not use your
+          microphone, create clinic appointments, or write to Google Calendar.
         </span>
       </div>
 
+      <section className="live-call-test-card" aria-labelledby="live-call-test-title">
+        <div>
+          <span className="eyebrow"><span className="eyebrow-dot" />LIVE VOICE PIPELINE</span>
+          <h3 id="live-call-test-title">Live call appointment checks</h3>
+          <p>
+            <strong>Isolated test call:</strong> click below to use a separate test database and mock calendar.
+            It cannot change clinic appointments. <strong>Regular voice calls:</strong> they are checked
+            automatically against the clinic database; the checker does not alter appointment records or
+            fetch Google Calendar data. Bookings, reschedules, and cancellations are checked; both checks
+            discard the transcript after verification.
+          </p>
+        </div>
+        <button
+          className="button button-run-single"
+          disabled={startingLiveTest}
+          onClick={() => void startLiveTest()}
+        >
+          {startingLiveTest ? 'Preparing isolated test…' : 'Start isolated test call'}
+        </button>
+        {liveCallEvaluations.length > 0 && (
+          <ul className="live-call-test-history" aria-label="Recent live call checks">
+            {liveCallEvaluations.slice(0, 8).map(evaluation => (
+              <li key={evaluation.call_evaluation_id}>
+                <span className={`status-dot ${evaluation.execution_status.toLowerCase()}`} />
+                <strong>{evaluation.execution_status.replace('_', ' ')}</strong>
+                <span className="evaluation-scope">{callScopeLabel(evaluation.data_scope)}</span>
+                <span>{new Date(evaluation.started_at).toLocaleString()}</span>
+                {evaluation.action_type && (
+                  <small>{evaluation.action_type.replaceAll('_', ' ')} · {evaluation.action_count} appointment(s)</small>
+                )}
+                {evaluation.findings.length > 0 && (
+                  <small>{evaluation.findings.map(describeCallFinding).join(' ')}</small>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       <ol className="evaluation-steps" aria-label="What each evaluation verifies">
-        <li><span>1</span><strong>Simulate</strong><small>Patient prompts and agent replies</small></li>
-        <li><span>2</span><strong>Check behavior</strong><small>Safety responses and expected tools</small></li>
-        <li><span>3</span><strong>Verify outcome</strong><small>Database record and mock calendar event</small></li>
+        <li><span>1</span><strong>Scripted suite</strong><small>Fake conversations and disposable data</small></li>
+        <li><span>2</span><strong>Isolated call</strong><small>Real voice pipeline, test database only</small></li>
+        <li><span>3</span><strong>Regular call</strong><small>Automatic, read-only appointment check</small></li>
       </ol>
 
       {error && (

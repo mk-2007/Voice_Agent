@@ -36,9 +36,10 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = Field(default="", description="LiveKit API Key")
     LIVEKIT_API_SECRET: str = Field(default="", description="LiveKit API Secret")
     LIVEKIT_AGENT_NAME: str = Field(default="clinical-voice-agent", description="Registered LiveKit agent name for room dispatch")
+    LIVE_TEST_AGENT_NAME: str = "clinical-voice-agent-test"
 
     # LLM Provider selection
-    LLM_PROVIDER: Literal["groq", "openai", "gemini"] = "groq"
+    LLM_PROVIDER: Literal["groq", "openai", "gemini"] = "gemini"
     
     # Groq (Free tier, ultra-low TTFT ~150ms)
     GROQ_API_KEY: str = Field(default="", description="Groq Cloud API Key")
@@ -71,6 +72,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = Field(default="")
     GOOGLE_REFRESH_TOKEN: str = Field(default="")
     GOOGLE_CALENDAR_ID: str = Field(default="primary")
+    LIVE_TEST_DATABASE_URL: str = Field(
+        default="sqlite:///./clinical_live_test.db",
+        description="Isolated database URL used only by the live call tester",
+    )
 
     # Clinic operational defaults
     CLINIC_NAME: str = "Serenity Medical Clinic"
@@ -84,4 +89,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

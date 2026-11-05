@@ -162,7 +162,8 @@ class GoogleCalendarService(BaseCalendarService):
     Uses Google OAuth2 Refresh Token credentials.
     """
 
-    def __init__(self):
+    def __init__(self, calendar_id: Optional[str] = None):
+        self.calendar_id = calendar_id or settings.GOOGLE_CALENDAR_ID
         self._service = None
         self._init_service()
 
@@ -208,7 +209,7 @@ class GoogleCalendarService(BaseCalendarService):
         page_token = None
         while True:
             response = self._service.events().list(
-                calendarId=settings.GOOGLE_CALENDAR_ID,
+                calendarId=self.calendar_id,
                 timeMin=day_start.isoformat(),
                 timeMax=day_end.isoformat(),
                 singleEvents=True,
@@ -268,7 +269,7 @@ class GoogleCalendarService(BaseCalendarService):
         from googleapiclient.errors import HttpError
         try:
             event = self._service.events().get(
-                calendarId=settings.GOOGLE_CALENDAR_ID, eventId=calendar_event_id
+                calendarId=self.calendar_id, eventId=calendar_event_id
             ).execute()
         except HttpError as exc:
             if getattr(exc, "resp", None) is not None and exc.resp.status == 404:
@@ -283,6 +284,7 @@ class GoogleCalendarService(BaseCalendarService):
         private_properties = event.get("extendedProperties", {}).get("private", {})
         event_details = {
             "event_id": event.get("id", calendar_event_id),
+            "status": event.get("status", ""),
             "appointment_id": private_properties.get("appointment_id", ""),
             "appointment_type": private_properties.get("appointment_type", ""),
             "doctor_id": private_properties.get("doctor_id", ""),
@@ -345,14 +347,14 @@ class GoogleCalendarService(BaseCalendarService):
             },
         }
 
-        created = self._service.events().insert(calendarId=settings.GOOGLE_CALENDAR_ID, body=event_body).execute()
+        created = self._service.events().insert(calendarId=self.calendar_id, body=event_body).execute()
         return created.get("id", "")
 
     def delete_event(self, doctor_id: str, calendar_event_id: str) -> bool:
         if not self._service:
             return False
         try:
-            self._service.events().delete(calendarId=settings.GOOGLE_CALENDAR_ID, eventId=calendar_event_id).execute()
+            self._service.events().delete(calendarId=self.calendar_id, eventId=calendar_event_id).execute()
             return True
         except Exception as e:
             logger.error(f"Failed to delete event {calendar_event_id}: {e}")

@@ -255,9 +255,20 @@ def cancel_appointment(
         own_session = True
 
     try:
+        existing = get_appointment(appointment_id, db=db)
         service = AppointmentService(db)
         success = service.cancel_appointment(appointment_id=appointment_id, reason=reason or "")
         if success:
+            if existing.get("found"):
+                return {
+                    "appointment_id": appointment_id,
+                    "cancelled": True,
+                    "message": (
+                        f"Appointment for {existing['patient_name']} with {existing['doctor_name']} "
+                        f"on {existing['appointment_date']} at {existing['start_time']} "
+                        "has been successfully cancelled."
+                    ),
+                }
             return {
                 "appointment_id": appointment_id,
                 "cancelled": True,

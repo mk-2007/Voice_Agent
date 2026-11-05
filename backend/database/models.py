@@ -159,6 +159,32 @@ class EvaluationResult(Base):
     evaluation_run: Mapped["EvaluationRun"] = relationship("EvaluationRun", back_populates="results")
 
 
+class LiveCallTestRun(Base):
+    __tablename__ = "live_call_test_runs"
+
+    live_call_test_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_uuid)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    execution_status: Mapped[str] = mapped_column(String(16), default="IN_PROGRESS")
+    booking_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    calendar_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    findings_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class LiveCallEvaluation(Base):
+    __tablename__ = "live_call_evaluations"
+
+    call_evaluation_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_uuid)
+    call_room_name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    data_scope: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    execution_status: Mapped[str] = mapped_column(String(24), default="IN_PROGRESS")
+    action_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    action_count: Mapped[int] = mapped_column(Integer, default=0)
+    findings_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -170,4 +196,3 @@ class AuditLog(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     result: Mapped[str] = mapped_column(String(32), default="SUCCESS")
     metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-

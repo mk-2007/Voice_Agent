@@ -379,7 +379,13 @@ class AppointmentService:
             resource_type="APPOINTMENT",
             resource_id=appointment_id,
             result="CANCELLED",
-            metadata={"reason": reason},
+            metadata={
+                "reason": reason,
+                "patient_id": apt.patient_id,
+                "doctor_id": apt.doctor_id,
+                "date": apt.appointment_date,
+                "time": apt.start_time,
+            },
         )
         return True
 
@@ -476,6 +482,8 @@ class AppointmentService:
             metadata={
                 "new_date": new_date,
                 "new_time": new_start_str,
+                "patient_id": apt.patient_id,
+                "doctor_id": doctor.doctor_id,
                 "old_calendar_event_id": old_calendar_event_id,
                 "new_calendar_event_id": new_calendar_event_id,
             },

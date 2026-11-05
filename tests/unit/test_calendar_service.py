@@ -48,6 +48,7 @@ def test_shared_calendar_busy_intervals_are_filtered_by_doctor(monkeypatch):
     monkeypatch.setattr(settings, "GOOGLE_CALENDAR_ID", "clinic-calendar")
     monkeypatch.setattr(settings, "CLINIC_TIMEZONE", "America/New_York")
     service = GoogleCalendarService.__new__(GoogleCalendarService)
+    service.calendar_id = "clinic-calendar"
     service._service = FakeGoogleService([
         _timed_event("doctor-1", "09:00", "09:30", "DOC-001"),
         _timed_event("doctor-2", "09:30", "10:00", "DOC-002"),
@@ -67,6 +68,7 @@ def test_live_event_contains_reference_without_patient_details(monkeypatch):
     monkeypatch.setattr(settings, "CLINIC_TIMEZONE", "America/New_York")
     fake_google = FakeGoogleService([])
     service = GoogleCalendarService.__new__(GoogleCalendarService)
+    service.calendar_id = "clinic-calendar"
     service._service = fake_google
 
     event_id = service.create_event(
