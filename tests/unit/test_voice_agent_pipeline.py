@@ -2,7 +2,7 @@
 Unit tests for LiveKit Voice Agent pipeline instantiation, tool registration,
 and multi-provider audio configuration.
 """
-
+import pytest
 import asyncio
 import logging
 import time
@@ -43,8 +43,10 @@ def test_agent_instructions_include_clinic_local_date(monkeypatch):
 
     monkeypatch.setattr(voice_agent, "datetime", FixedDateTime)
     instructions = voice_agent.build_receptionist_instructions()
-    assert "Today's date is 2026-11-04 in the clinic timezone (America/New_York)." in instructions
-
+    assert (
+        f"Today's date is 2026-11-04 in the clinic timezone ({voice_agent.settings.CLINIC_TIMEZONE})."
+        in instructions
+    )
 
 @pytest.mark.asyncio
 async def test_lookup_existing_appointment_returns_verified_date(monkeypatch):
@@ -255,46 +257,36 @@ def test_voice_latency_logging_excludes_transcript_and_reports_pipeline_stages(c
     assert "tts_first_audio': 190.0" in caplog.text
     assert "fictional patient transcript" not in caplog.text
 
-
-def test_elevenlabs_voice_fallback(monkeypatch):
+def test_deepgram_tts_uses_configured_model(monkeypatch):
     captured = {}
-    expected = object()
-    monkeypatch.setattr(voice_agent.settings, "TTS_PROVIDER", "elevenlabs")
-    monkeypatch.setattr(voice_agent.settings, "ELEVENLABS_API_KEY", "sk-test-eleven")
-    monkeypatch.setattr(voice_agent.settings, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-    monkeypatch.setattr(voice_agent.settings, "ELEVENLABS_MODEL_ID", "eleven_turbo_v2_5")
+    monkeypatch.setattr(voice_agent.settings, "DEEPGRAM_API_KEY", "dg-test")
+    monkeypatch.setattr(voice_agent.settings, "DEEPGRAM_TTS_MODEL", "aura-2-luna-en")
 
-    class FakeElevenLabsTTS:
+    class FakeTTS:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr("livekit.plugins.elevenlabs.TTS", FakeElevenLabsTTS)
-    tts = voice_agent.build_tts()
-    assert isinstance(tts, FakeElevenLabsTTS)
-    # Rachel (21m00Tcm4TlvDq8ikWAM) should normalize to free premade voice Bella
-    assert captured["voice_id"] == "EXAVITQu4vr4xnSDxMaL"
-    assert captured["auto_mode"] is True
-    assert "chunk_length_schedule" not in captured
-    assert "streaming_latency" not in captured
+    monkeypatch.setattr(voice_agent.deepgram, "TTS", FakeTTS)
+    assert isinstance(voice_agent.build_tts(), FakeTTS)
+    assert captured["model"] == "aura-2-luna-en"
 
 
-def test_elevenlabs_fallback_to_openai_without_key(monkeypatch):
+def test_deepgram_stt_keeps_phone_numbers_as_digits(monkeypatch):
     captured = {}
-    expected = object()
-    monkeypatch.setattr(voice_agent.settings, "TTS_PROVIDER", "elevenlabs")
-    monkeypatch.setattr(voice_agent.settings, "ELEVENLABS_API_KEY", "")
-    monkeypatch.setattr(voice_agent.openai, "TTS", lambda **kwargs: captured.update(kwargs) or expected)
+    monkeypatch.setattr(voice_agent.settings, "DEEPGRAM_API_KEY", "dg-test")
 
-    assert voice_agent.build_tts() is expected
-    assert "voice" in captured
+    class FakeSTT:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(voice_agent.deepgram, "STT", FakeSTT)
+    assert isinstance(voice_agent.build_stt(), FakeSTT)
+    assert captured["model"] == "nova-3" and captured["numerals"] is True
 
 
-def test_deepgram_stt_fallback_without_key(monkeypatch):
-    captured = {}
-    expected = object()
-    monkeypatch.setattr(voice_agent.settings, "STT_PROVIDER", "deepgram")
+def test_deepgram_fails_loudly_without_key(monkeypatch):
     monkeypatch.setattr(voice_agent.settings, "DEEPGRAM_API_KEY", "")
-    monkeypatch.setattr(voice_agent.openai, "STT", lambda **kwargs: captured.update(kwargs) or expected)
-
-    assert voice_agent.build_stt() is expected
-    assert "api_key" in captured
+    with pytest.raises(RuntimeError):
+        voice_agent.build_stt()
+    with pytest.raises(RuntimeError):
+        voice_agent.build_tts()

@@ -56,7 +56,7 @@ class Doctor(Base):
     doctor_name: Mapped[str] = mapped_column(String(255), nullable=False)
     specialization: Mapped[str] = mapped_column(String(255), nullable=False)
     calendar_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), default="America/New_York")
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Karachi")
     active_status: Mapped[bool] = mapped_column(Boolean, default=True)
     working_hours_start: Mapped[str] = mapped_column(String(8), default="09:00")
     working_hours_end: Mapped[str] = mapped_column(String(8), default="17:00")

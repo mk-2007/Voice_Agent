@@ -56,9 +56,10 @@ class Settings(BaseSettings):
     # Speech-to-Text (STT) Provider
     STT_PROVIDER: Literal["deepgram", "openai", "groq"] = "deepgram"
     DEEPGRAM_API_KEY: str = Field(default="", description="Deepgram API Key")
+    DEEPGRAM_TTS_MODEL: str = "aura-2-luna-en"
 
     # Text-to-Speech (TTS) Provider
-    TTS_PROVIDER: Literal["elevenlabs", "openai", "edge"] = "elevenlabs"
+    TTS_PROVIDER: Literal["deepgram", "elevenlabs", "openai", "edge"] = "deepgram"
     ELEVENLABS_API_KEY: str = Field(default="", description="ElevenLabs API Key")
     ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"  # Rachel voice
     ELEVENLABS_MODEL_ID: str = "eleven_turbo_v2_5"
@@ -81,7 +82,7 @@ class Settings(BaseSettings):
     CLINIC_NAME: str = "Serenity Medical Clinic"
     CLINIC_PHONE: str = "+1 (555) 234-5678"
     CLINIC_ADDRESS: str = "123 Healthcare Boulevard, Suite 400"
-    CLINIC_TIMEZONE: str = "America/New_York"
+    CLINIC_TIMEZONE: str = "Asia/Karachi"
     CLINIC_OPENING_TIME: str = "09:00"
     CLINIC_CLOSING_TIME: str = "17:00"
     DEFAULT_APPOINTMENT_DURATION_MINUTES: int = 30

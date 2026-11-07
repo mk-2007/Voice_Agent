@@ -1,7 +1,7 @@
 """
 LiveKit Voice Agent Worker for Clinical Receptionist.
 Configures the cascaded STT -> LLM -> TTS pipeline with real-time barge-in,
-multi-provider support (Groq, OpenAI, Deepgram, ElevenLabs), and controlled tools.
+multi-provider LLM support, Deepgram STT/TTS, post-call auditing, and controlled tools.
 Compliant with PRD Section 4, 5, 6, and 7.
 """
 
@@ -9,7 +9,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -45,13 +45,9 @@ try:
 except ImportError:
     deepgram = None
 
-try:
-    from livekit.plugins import elevenlabs
-except ImportError:
-    elevenlabs = None
-
 from config.settings import settings
-from backend.database.connection import init_db
+from backend.database.connection import SessionLocal, init_db
+from backend.services.call_auditor import audit_live_call, persist_audit
 from backend.services.live_call_verifier import database_urls_match
 from backend.call_context import current_voice_call_id
 from backend.agent.prompts import RECEPTIONIST_SYSTEM_PROMPT
@@ -113,40 +109,27 @@ def build_llm():
 
 
 def build_stt():
-    """Constructs Speech-to-Text provider (Deepgram or OpenAI)."""
-    if settings.STT_PROVIDER == "deepgram" and settings.DEEPGRAM_API_KEY and deepgram is not None:
-        try:
-            logger.info("Using Deepgram STT (nova-2-general)")
-            return deepgram.STT(
-                api_key=settings.DEEPGRAM_API_KEY,
-                model="nova-2-general",
-                language="en-US",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to load Deepgram plugin: {e}, falling back to OpenAI STT")
-    api_key = settings.OPENAI_API_KEY or "sk-dummy-test-key-for-local-dev"
-    return openai.STT(api_key=api_key)
+    """Deepgram Speech-to-Text. Fails loudly instead of silently falling back."""
+    if not (settings.DEEPGRAM_API_KEY and deepgram):
+        raise RuntimeError("Deepgram STT needs DEEPGRAM_API_KEY and livekit-plugins-deepgram")
+    logger.info("Using Deepgram STT (nova-3)")
+    return deepgram.STT(
+        api_key=settings.DEEPGRAM_API_KEY,
+        model="nova-3",
+        language="en-US",
+        numerals=True,       # "five five five" -> 555: phone numbers and dates stay as digits
+        smart_format=True,
+        keyterm=[settings.CLINIC_NAME],
+    )
 
 
 def build_tts():
-    """Constructs Text-to-Speech provider (ElevenLabs or OpenAI)."""
-    if settings.TTS_PROVIDER == "elevenlabs" and settings.ELEVENLABS_API_KEY and elevenlabs is not None:
-        try:
-            voice_id = settings.ELEVENLABS_VOICE_ID
-            # Rachel (21m00Tcm4TlvDq8ikWAM) requires a paid tier; EXAVITQu4vr4xnSDxMaL (Bella) is free premade
-            if voice_id == "21m00Tcm4TlvDq8ikWAM":
-                voice_id = "EXAVITQu4vr4xnSDxMaL"
-            logger.info(f"Using ElevenLabs TTS (Voice: {voice_id})")
-            return elevenlabs.TTS(
-                api_key=settings.ELEVENLABS_API_KEY,
-                voice_id=voice_id,
-                model=settings.ELEVENLABS_MODEL_ID,
-                auto_mode=True,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to load ElevenLabs plugin: {e}, falling back to OpenAI TTS")
-    api_key = settings.OPENAI_API_KEY or "sk-dummy-test-key-for-local-dev"
-    return openai.TTS(api_key=api_key, voice="alloy")
+    """Deepgram Text-to-Speech (Aura-2)."""
+    if not (settings.DEEPGRAM_API_KEY and deepgram):
+        raise RuntimeError("Deepgram TTS needs DEEPGRAM_API_KEY and livekit-plugins-deepgram")
+    model = getattr(settings, "DEEPGRAM_TTS_MODEL", "aura-2-luna-en")
+    logger.info(f"Using Deepgram TTS ({model})")
+    return deepgram.TTS(api_key=settings.DEEPGRAM_API_KEY, model=model)
 
 
 def build_vad():
@@ -410,6 +393,23 @@ def prewarm(proc: JobProcess):
         logger.warning(f"Silero VAD prewarm skipped: {e}")
 
 
+async def _audit_call(room: str, started: datetime, transcript: str) -> None:
+    """Verify the finished call against the DB and calendar. Never raises."""
+    scope = "test" if settings.LIVEKIT_AGENT_NAME == settings.LIVE_TEST_AGENT_NAME else "live"
+
+    def _run():
+        with SessionLocal() as db:
+            result = audit_live_call(transcript, room, started, db)
+            persist_audit(db, room, scope, started, result)
+            return result
+
+    try:
+        result = await asyncio.to_thread(_run)
+        logger.info("Call audit room=%s verdict=%s findings=%s", room, result.verdict, result.findings)
+    except Exception:
+        logger.exception("Call audit failed")
+
+
 async def entrypoint(ctx: JobContext):
     """LiveKit agent worker lifecycle entry point."""
     if settings.LIVEKIT_AGENT_NAME == settings.LIVE_TEST_AGENT_NAME:
@@ -456,6 +456,20 @@ async def entrypoint(ctx: JobContext):
     )
     session.on("conversation_item_added", log_voice_turn_latency)
 
+    # Collect the call transcript in memory only (used for the post-call audit,
+    # never written to disk). "Rachel" must match the label the verifier expects.
+    transcript_lines: List[str] = []
+    call_started = datetime.now(timezone.utc)
+
+    def _capture(event: Any) -> None:
+        item = getattr(event, "item", None)
+        text = getattr(item, "text_content", None)
+        role = getattr(item, "role", None)
+        if text and role in ("user", "assistant"):
+            transcript_lines.append(f"{'Rachel' if role == 'assistant' else 'Caller'}: {text}")
+
+    session.on("conversation_item_added", _capture)
+
     # Start the agent session in the room immediately.
     # sync_transcription=False bypasses TranscriptSynchronizer's CPU STFT loop,
     # completely eliminating audio stutter and event loop freezes on Windows.
@@ -484,6 +498,7 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"Room {ctx.room.name} call ended, closing agent session.")
         finally:
             await session.aclose()
+            await _audit_call(ctx.room.name, call_started, "\n".join(transcript_lines))
     finally:
         current_voice_call_id.reset(call_context_token)
 
