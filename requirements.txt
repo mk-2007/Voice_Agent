@@ -25,13 +25,13 @@ google-api-python-client>=2.150.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.1
 
-# Real-Time Voice & LiveKit Pipeline
-livekit>=0.18.0
-livekit-agents>=0.12.0
-livekit-plugins-openai>=0.10.0
-livekit-plugins-deepgram>=0.7.0
-livekit-plugins-elevenlabs>=0.7.0
-livekit-plugins-silero>=0.7.0
+# Real-Time Voice & LiveKit Pipeline (pinned to the tested versions)
+livekit==1.1.21
+livekit-api==1.2.2
+livekit-agents==1.8.10
+livekit-plugins-openai==1.8.10
+livekit-plugins-deepgram==1.8.10
+livekit-plugins-silero==1.8.10
 
 # Testing & Evaluation Framework
 pytest>=8.3.0

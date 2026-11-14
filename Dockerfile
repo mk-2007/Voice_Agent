@@ -1,23 +1,42 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1
+# LiveKit Cloud build for the Clinical Voice Agent worker.
+# Based on LiveKit's pip template; Python 3.11 matches what you test locally.
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim AS base
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# --- Build stage: compilers live here only ---
+FROM base AS build
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    python3-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY requirements.txt ./
+RUN python -m venv .venv
+ENV PATH="/app/.venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# --- Production stage ---
+FROM base
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/app" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    appuser
 
-COPY requirements.txt ./requirements.txt
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt
+WORKDIR /app
+COPY --from=build --chown=appuser:appuser /app /app
+ENV PATH="/app/.venv/bin:$PATH"
+USER appuser
 
-COPY backend ./backend
-COPY config ./config
-COPY evaluation ./evaluation
-COPY pytest.ini ./pytest.ini
-
-EXPOSE 8000
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# "start" = production mode: connect to LiveKit Cloud and wait for calls.
+CMD ["python", "-m", "backend.agent.voice_agent", "start"]
