@@ -11,13 +11,21 @@ __pycache__/
 htmlcov/
 
 # Environment variables & secrets
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
+!.env.sample
 *.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 credentials.json
 token.json
 service_account.json
+client_secret*.json
+id_rsa
+id_ed25519
 
 # LiveKit & Local data
 *.db
@@ -46,7 +54,3 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
-
-.env.cloud
-
-.env.cloud
