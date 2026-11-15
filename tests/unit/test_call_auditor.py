@@ -192,6 +192,8 @@ def test_karachi_start_time_regression(env):
     looks 5h in the future and wrongly reports 'not recorded'. The auditor must not."""
     db, cal = env
     make_booking(db, cal)
+    db.query(AuditLog).one().timestamp = datetime(2026, 11, 7, 10, 0)
+    db.commit()
     old = verify_live_call(TRANSCRIPT, CALL, STARTED, db)
     assert "appointment_change_not_recorded_for_call" in old[3]
     assert run(db, cal).verdict == "PASS"
