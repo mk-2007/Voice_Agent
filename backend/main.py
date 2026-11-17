@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes.v1 import router as v1_router
 from backend.database.connection import init_db
+from backend.tester_api import router as tester_router
 from config.settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -33,6 +34,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "Idempotency-Key"],
 )
 app.include_router(v1_router, prefix="/api/v1")
+
+# Call Tester: page at /tester, data at /api/tester/...
+app.include_router(tester_router)
 
 
 @app.get("/health", tags=["health"])

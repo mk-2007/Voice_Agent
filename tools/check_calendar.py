@@ -40,6 +40,12 @@ def main(write=False):
     print(f"Client ID {have(settings.GOOGLE_CLIENT_ID)}, client secret {have(settings.GOOGLE_CLIENT_SECRET)}, "
           f"refresh token {have(settings.GOOGLE_REFRESH_TOKEN)}, calendar id '{settings.GOOGLE_CALENDAR_ID}'")
 
+    if settings.GOOGLE_REFRESH_TOKEN.startswith("ya29."):
+        print("   -> GOOGLE_REFRESH_TOKEN is an access token, not a refresh token. "
+              "Run tools/get_google_refresh_token.py and confirm it prints "
+              "'New refresh token saved'.")
+        return False
+
     svc = GoogleCalendarService()
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")

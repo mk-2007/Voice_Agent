@@ -10,8 +10,10 @@ from backend.database.models import (
     Appointment, AuditLog, Base, Doctor, LiveCallEvaluation, Patient,
 )
 from backend.services.calendar_service import MockCalendarService
+from backend.database.audit_details import CallAuditDetail
 from backend.services.call_auditor import (
-    audit_live_call, names_match, persist_audit, phone_matches, severity,
+    audit_live_call, names_match, persist_audit, phone_matches, record_audit_error,
+    run_and_store_audit, severity,
 )
 from backend.services.live_call_verifier import verify_live_call
 from config.settings import settings
@@ -63,7 +65,7 @@ def make_booking(db, cal, start="15:00", end="15:30", date="2026-11-10",
                        appointment_date=date, start_time=start, end_time=end,
                        status="CONFIRMED", calendar_event_id=event_id))
     db.add(AuditLog(actor="agent", action=action, resource_type="APPOINTMENT",
-                    resource_id=appt_id,
+                    resource_id=appt_id, timestamp=datetime(2026, 11, 7, 10, 0),
                     metadata_json=json.dumps({"call_id": CALL, "date": date, "time": start,
                                               "patient_id": "P1", "doctor_id": "DOC-001"})))
     db.commit()
@@ -192,8 +194,6 @@ def test_karachi_start_time_regression(env):
     looks 5h in the future and wrongly reports 'not recorded'. The auditor must not."""
     db, cal = env
     make_booking(db, cal)
-    db.query(AuditLog).one().timestamp = datetime(2026, 11, 7, 10, 0)
-    db.commit()
     old = verify_live_call(TRANSCRIPT, CALL, STARTED, db)
     assert "appointment_change_not_recorded_for_call" in old[3]
     assert run(db, cal).verdict == "PASS"
@@ -211,6 +211,18 @@ def test_persist_is_idempotent_and_stores_codes_only(env):
     assert "Ali" not in rows[0].findings_json  # no transcript content leaks
 
 
+def test_identical_short_numbers_are_not_reported_as_a_mismatch(env):
+    """The caller said 12345 and 12345 was stored: that is 'invalid length', not 'differs'."""
+    db, cal = env
+    make_booking(db, cal)
+    patient = db.query(Patient).filter_by(patient_id="P1").one()
+    patient.phone_number = "12345"
+    db.commit()
+    r = run(db, cal, claims={**GOOD_CLAIMS, "phone": "12345"})
+    assert "phone_not_plausible" in r.findings and "phone_differs_from_caller" not in r.findings
+    assert by_key(r, "phone").status == "pass" and by_key(r, "phone_valid").status == "fail"
+
+
 def test_helpers():
     assert phone_matches("+92 300 1234567", "03001234567")
     assert not phone_matches("03001234567", "03001234568")
@@ -219,3 +231,132 @@ def test_helpers():
     assert not names_match("Ali Raza", "Sara Malik")
     assert severity("slot_double_booked") == "critical"
     assert severity("name_not_provided_by_caller") == "review"
+
+
+# ---------------------------------------------------------------------------
+# Check-by-check output (what the Tester page shows)
+# ---------------------------------------------------------------------------
+
+def by_key(result, key, appointment=None):
+    return next(c for c in result.checks if c.key == key and
+                (appointment is None or c.appointment_id in (None, appointment)))
+
+
+def test_clean_call_lists_every_check_with_evidence(env):
+    db, cal = env
+    make_booking(db, cal)
+    r = run(db, cal)
+    assert r.verdict == "PASS"
+    assert len(r.checks) >= 20
+    assert all(c.status == "pass" for c in r.checks), [(c.key, c.status) for c in r.checks if c.status != "pass"]
+    name = by_key(r, "name")
+    assert (name.expected, name.actual) == ("Ali Raza", "Ali Raza")
+    time_check = by_key(r, "time")
+    assert (time_check.expected, time_check.actual) == ("3:00 PM", "3:00 PM")
+    assert r.bookings[0]["patient_name"] == "Ali Raza" and r.bookings[0]["doctor"] == "Dr. Ahmed Khan"
+    groups = {c.group for c in r.checks}
+    assert groups == {"call", "caller_vs_booking", "rachel", "booking_record", "calendar"}
+
+
+def test_wrong_time_shows_both_sides_and_is_critical(env):
+    db, cal = env
+    make_booking(db, cal, start="16:00", end="16:30")
+    wrong = TRANSCRIPT.replace("3 PM is confirmed", "4 PM is confirmed")
+    r = run(db, cal, transcript=wrong)
+    c = by_key(r, "time")
+    assert c.status == "fail" and c.code == "time_differs_from_caller" and c.severity == "critical"
+    assert (c.expected, c.actual) == ("3:00 PM", "4:00 PM")
+
+
+def test_calendar_mismatch_check_shows_calendar_time(env):
+    db, cal = env
+    eid = make_booking(db, cal)
+    for e in cal._events["DOC-001"]:
+        if e["event_id"] == eid:
+            e["start"], e["end"] = "16:00", "16:30"
+    r = run(db, cal)
+    c = by_key(r, "time_match")
+    assert c.status == "fail" and "4:00 PM" in c.actual and "3:00 PM" in c.expected
+
+
+def test_unreadable_caller_side_is_skipped_not_passed(env):
+    db, cal = env
+    make_booking(db, cal)
+
+    def down(*a):
+        raise TimeoutError("quota")
+
+    r = run(db, cal, extractor=down)
+    assert by_key(r, "caller_readable").status == "fail"
+    for key in ("name", "phone", "doctor", "date", "time", "consent"):
+        assert by_key(r, key).status == "skip", key
+
+
+def test_caller_who_named_no_doctor_is_skipped(env):
+    db, cal = env
+    make_booking(db, cal)
+    r = run(db, cal, claims={**GOOD_CLAIMS, "doctor": None})
+    assert by_key(r, "doctor").status == "skip"
+    assert r.verdict == "PASS"
+
+
+def test_no_booking_call_checks(env):
+    db, cal = env
+    t = "Caller: What are your opening hours?\nRachel: We open at 9 and close at 5."
+    r = run(db, cal, transcript=t)
+    assert r.verdict == "NO_CHANGE"
+    assert [c.status for c in r.checks] == ["pass", "pass", "pass"]
+
+    t2 = "Caller: Can I book tomorrow?\nRachel: Done! Your confirmation ID is APT-FAKE99."
+    r2 = run(db, cal, transcript=t2)
+    assert by_key(r2, "no_false_booking").status == "fail"
+
+
+def test_cancelled_booking_checks(env):
+    db, cal = env
+    eid = make_booking(db, cal, action="CANCEL_APPOINTMENT")
+    appt = db.query(Appointment).filter_by(appointment_id="APT-A1B2C3").one()
+    appt.status = "CANCELLED"
+    db.commit()
+    cal.delete_event("DOC-001", eid)
+    t = ("Caller: Please cancel my appointment with Dr. Ahmed Khan, I am Ali Raza.\n"
+         "Rachel: Your appointment with Dr. Ahmed Khan on November 10 at 3 PM is cancelled.")
+    r = run(db, cal, transcript=t)
+    assert r.verdict == "PASS", r.findings
+    assert [c.status for c in r.checks if c.appointment_id] == ["pass", "pass", "pass"]
+
+
+def test_run_and_store_saves_checks_transcript_and_summary(env):
+    db, cal = env
+    make_booking(db, cal)
+    r = run_and_store_audit(db, CALL, "live", STARTED, TRANSCRIPT, calendar=cal,
+                            extractor=lambda t, d: GOOD_CLAIMS, now=NOW)
+    assert r.verdict == "PASS"
+    row = db.get(CallAuditDetail, CALL)
+    assert row.verdict == "PASS" and row.transcript_text == TRANSCRIPT
+    stored = json.loads(row.checks_json)
+    assert len(stored) == len(r.checks) and stored[0]["status"] in ("pass", "fail", "skip")
+    assert json.loads(row.bookings_json)[0]["appointment_id"] == "APT-A1B2C3"
+    assert db.query(LiveCallEvaluation).count() == 1
+    # storing again for the same room updates, never duplicates
+    run_and_store_audit(db, CALL, "live", STARTED, TRANSCRIPT, calendar=cal,
+                        extractor=lambda t, d: GOOD_CLAIMS, now=NOW)
+    assert db.query(CallAuditDetail).count() == 1 and db.query(LiveCallEvaluation).count() == 1
+
+
+def test_transcript_not_stored_when_disabled(env, monkeypatch):
+    db, cal = env
+    make_booking(db, cal)
+    monkeypatch.setenv("STORE_CALL_TRANSCRIPTS", "false")
+    run_and_store_audit(db, CALL, "live", STARTED, TRANSCRIPT, calendar=cal,
+                        extractor=lambda t, d: GOOD_CLAIMS, now=NOW)
+    assert db.get(CallAuditDetail, CALL).transcript_text is None
+
+
+def test_tester_crash_leaves_a_visible_error_row(env):
+    db, cal = env
+    record_audit_error(db, "room-boom", "live", STARTED, "RuntimeError: db down", transcript=None)
+    row = db.get(CallAuditDetail, "room-boom")
+    assert row.verdict == "ERROR" and "db down" in row.error_text
+    assert json.loads(row.findings_json) == ["audit_failed"]
+    assert db.query(LiveCallEvaluation).filter_by(call_room_name="room-boom").one().execution_status == "ERROR"

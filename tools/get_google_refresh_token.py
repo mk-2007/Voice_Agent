@@ -14,10 +14,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]  # same scope the app uses
+HOST = "localhost"
 PORT = 8080
+REDIRECT_URI = f"http://{HOST}:{PORT}"
 KEY = "GOOGLE_REFRESH_TOKEN"
 
 
@@ -41,25 +42,36 @@ def set_env_value(path: Path, key: str, value: str) -> bool:
 
 
 def main() -> int:
-    from config.settings import settings
+    from dotenv import dotenv_values
 
-    if not (settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET):
+    env_values = dotenv_values(ROOT / ".env")
+    client_id = env_values.get("GOOGLE_CLIENT_ID")
+    client_secret = env_values.get("GOOGLE_CLIENT_SECRET")
+
+    if not (client_id and client_secret):
         print("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are missing in .env")
         return 1
 
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    config = {"installed": {
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "client_secret": settings.GOOGLE_CLIENT_SECRET,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    config = {"web": {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
-        "redirect_uris": [f"http://localhost:{PORT}/"],
+        "redirect_uris": [REDIRECT_URI],
     }}
     flow = InstalledAppFlow.from_client_config(config, SCOPES)
-    print(f"Opening your browser. If Google shows redirect_uri_mismatch, add\n"
-          f"  http://localhost:{PORT}/\nunder Authorized redirect URIs of your OAuth client and run again.\n")
-    creds = flow.run_local_server(port=PORT, access_type="offline", prompt="consent")
+    print("This helper uses a Web application OAuth client. Make sure\n"
+          f"Authorized redirect URIs includes exactly:\n  {REDIRECT_URI}\n"
+          "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env must belong to that client.\n")
+    creds = flow.run_local_server(
+        host=HOST,
+        port=PORT,
+        redirect_uri_trailing_slash=False,
+        access_type="offline",
+        prompt="consent",
+    )
 
     if not creds.refresh_token:
         print("Google did not return a refresh token. Remove this app's access at "

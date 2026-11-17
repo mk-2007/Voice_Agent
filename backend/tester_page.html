@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Tester</title>
+<script>
+  // Set the theme before first paint (saved choice, else the system setting).
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('tester-theme'); } catch (e) {}
+    if (!t) t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #f4f6fb; --panel: #ffffff; --panel2: #f1f4f9; --text: #0f172a; --muted: #64748b;
+    --border: #e2e8f0; --accent: #4f46e5; --accent-soft: #eef2ff;
+    --pass: #15803d; --pass-bg: #dcfce7; --fail: #b91c1c; --fail-bg: #fee2e2;
+    --warn: #b45309; --warn-bg: #fef3c7; --idle: #475569; --idle-bg: #e2e8f0;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 30px rgba(15,23,42,.06);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0f1f; --panel: #111a2e; --panel2: #17223c; --text: #e7ecf6; --muted: #93a1bd;
+    --border: #22304f; --accent: #8b93ff; --accent-soft: #1b2347;
+    --pass: #4ade80; --pass-bg: rgba(74,222,128,.13); --fail: #f87171; --fail-bg: rgba(248,113,113,.13);
+    --warn: #fbbf24; --warn-bg: rgba(251,191,36,.13); --idle: #9fb0cf; --idle-bg: rgba(148,163,184,.15);
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 12px 34px rgba(0,0,0,.4);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mono { font-family: var(--mono); font-size: .92em; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* header */
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #6366f1, #22c1c3); box-shadow: 0 6px 18px rgba(79,70,229,.35); }
+  .brand h1 { margin: 0; font-size: 19px; letter-spacing: -.01em; }
+  .brand p { margin: 0; color: var(--muted); font-size: 13px; }
+  .top-right { display: flex; align-items: center; gap: 14px; }
+  .clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; text-align: right; line-height: 1.25; }
+  .clock b { display: block; color: var(--text); font-size: 15px; font-weight: 600; }
+  .live { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--pass-bg); color: var(--pass); font-size: 13px; font-weight: 600; }
+  .live .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 1.8s infinite; }
+  .live.off { background: var(--fail-bg); color: var(--fail); }
+  .live.off .dot { animation: none; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 currentColor; } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .icon-btn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel2); display: grid; place-items: center; font-size: 16px; }
+
+  main { max-width: 1480px; margin: 0 auto; padding: 24px 28px 48px; }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .stat .k { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .stat .v { font-size: 34px; font-weight: 700; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stat.pass .v { color: var(--pass); } .stat.fail .v { color: var(--fail); }
+  .bar { height: 7px; border-radius: 99px; background: var(--idle-bg); margin-top: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #16a34a); border-radius: 99px; transition: width .5s ease; }
+
+  /* layout */
+  .layout { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 22px; align-items: start; }
+  .listpane { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); position: sticky; top: 96px; max-height: calc(100vh - 120px); display: flex; flex-direction: column; overflow: hidden; }
+  .chips { display: flex; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .chip { border: 1px solid var(--border); background: var(--panel2); padding: 5px 11px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .chip[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .list { overflow: auto; }
+  .day { padding: 10px 16px 4px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .item { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-left: 4px solid transparent; border-bottom: 1px solid var(--border); padding: 12px 16px 12px 14px; }
+  .item:hover { background: var(--panel2); }
+  .item.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+  .item.new { animation: flash 2.4s ease-out; }
+  @keyframes flash { 0% { background: var(--pass-bg); } 100% { background: transparent; } }
+  .item .row1 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .item .time { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .item .rel { color: var(--muted); font-size: 12px; margin-left: 6px; font-weight: 500; }
+  .item .headline { margin: 4px 0 8px; font-size: 14px; color: var(--text); overflow-wrap: anywhere; }
+  .item .mini { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .item .mini .bar { flex: 1; margin: 0; height: 5px; }
+  .empty-list { padding: 36px 22px; text-align: center; color: var(--muted); }
+
+  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
+  .pill.pass { background: var(--pass-bg); color: var(--pass); }
+  .pill.fail { background: var(--fail-bg); color: var(--fail); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.idle { background: var(--idle-bg); color: var(--idle); }
+
+  /* detail */
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); margin-bottom: 18px; overflow: hidden; }
+  .card > .hd { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card > .hd h3 { margin: 0; font-size: 15px; }
+  .card > .hd small { color: var(--muted); }
+  .hero { display: flex; gap: 18px; align-items: center; padding: 20px; }
+  .badge { flex: none; width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; font-size: 30px; font-weight: 800; }
+  .badge.pass { background: var(--pass-bg); color: var(--pass); } .badge.fail { background: var(--fail-bg); color: var(--fail); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); } .badge.idle { background: var(--idle-bg); color: var(--idle); }
+  .hero h2 { margin: 0 0 4px; font-size: 21px; letter-spacing: -.01em; overflow-wrap: anywhere; }
+  .hero .sub { color: var(--muted); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .hero .grow { flex: 1; min-width: 0; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { border: 1px solid var(--border); background: var(--panel2); padding: 8px 14px; border-radius: 10px; font-weight: 600; font-size: 14px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn[disabled] { opacity: .6; cursor: progress; }
+  .banner { padding: 12px 20px; font-size: 14px; border-top: 1px solid var(--border); }
+  .banner.pass { background: var(--pass-bg); color: var(--pass); } .banner.fail { background: var(--fail-bg); color: var(--fail); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); } .banner.idle { background: var(--idle-bg); color: var(--idle); }
+  .errtext { margin: 10px 20px 16px; padding: 10px 12px; border-radius: 10px; background: var(--panel2); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .booking { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+  .booking > div { padding: 14px 20px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); min-width: 0; }
+  .booking > div:nth-child(3n) { border-right: 0; }
+  .booking .k { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .booking .v { margin-top: 2px; font-weight: 600; overflow-wrap: anywhere; }
+
+  .tally { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .tally span { font-size: 13px; font-weight: 700; }
+  .t-pass { color: var(--pass); } .t-fail { color: var(--fail); } .t-skip { color: var(--idle); }
+  .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+  .grp { border-top: 1px solid var(--border); }
+  .hd + .grp { border-top: 0; }
+  .refchip { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); padding: 2px 10px; border-radius: 999px; font-weight: 700; }
+  .grp-h { padding: 12px 20px 6px; display: flex; align-items: baseline; gap: 10px; }
+  .grp-h b { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .grp-h span { color: var(--muted); font-size: 13px; }
+  .check { display: grid; grid-template-columns: 28px minmax(0, 1fr) minmax(0, 330px); gap: 12px; padding: 10px 20px; align-items: start; }
+  .check + .check { border-top: 1px dashed var(--border); }
+  .check.fail { background: var(--fail-bg); }
+  .check.fail.review { background: var(--warn-bg); }
+  .ico { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; margin-top: 1px; }
+  .ico.pass { background: var(--pass-bg); color: var(--pass); } .ico.fail { background: var(--fail); color: #fff; }
+  .ico.review { background: var(--warn); } .ico.skip { background: var(--idle-bg); color: var(--idle); }
+  .check .lbl { font-weight: 600; overflow-wrap: anywhere; }
+  .check .det { color: var(--muted); font-size: 13px; margin-top: 1px; overflow-wrap: anywhere; }
+  .check.fail .det { color: inherit; opacity: .92; }
+  .sev { display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px; border-radius: 6px; vertical-align: 1px; }
+  .sev.critical { background: var(--fail); color: #fff; } .sev.review { background: var(--warn); color: #fff; }
+  .evid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+  .evid.one { grid-template-columns: 1fr; }
+  .evid > div { background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 5px 9px; min-width: 0; }
+  .check.fail .evid > div { background: var(--panel); }
+  .evid em { display: block; font-style: normal; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .evid span { overflow-wrap: anywhere; font-weight: 600; }
+  .bk-title { padding: 12px 20px; background: var(--panel2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-weight: 700; }
+
+  /* transcript */
+  .chat { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 10px; max-height: 520px; overflow: auto; }
+  .msg { max-width: 78%; padding: 9px 13px; border-radius: 14px; overflow-wrap: anywhere; }
+  .msg small { display: block; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; opacity: .7; margin-bottom: 1px; }
+  .msg.rachel { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); border-top-left-radius: 4px; }
+  .msg.caller { align-self: flex-end; background: var(--accent-soft); border: 1px solid var(--accent); border-top-right-radius: 4px; }
+  mark { background: rgba(250, 204, 21, .45); color: inherit; border-radius: 4px; padding: 0 2px; }
+  .muted-note { padding: 18px 20px; color: var(--muted); }
+
+  .placeholder { background: var(--panel); border: 1px dashed var(--border); border-radius: 16px; padding: 70px 24px; text-align: center; color: var(--muted); }
+  .placeholder h3 { margin: 0 0 6px; color: var(--text); font-size: 18px; }
+  .skeleton { height: 120px; border-radius: 16px; margin-bottom: 18px; background: linear-gradient(90deg, var(--panel) 25%, var(--panel2) 37%, var(--panel) 63%); background-size: 400% 100%; animation: sk 1.3s infinite; border: 1px solid var(--border); }
+  @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+  .toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 20px); background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 12px; font-weight: 600; opacity: 0; pointer-events: none; transition: all .25s; z-index: 20; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 1050px) {
+    .layout { grid-template-columns: 1fr; } .listpane { position: static; max-height: 420px; }
+    .stats { grid-template-columns: repeat(2, 1fr); } .check { grid-template-columns: 28px 1fr; } .check .evid { grid-column: 2; }
+    .booking { grid-template-columns: repeat(2, minmax(0, 1fr)); } .booking > div:nth-child(3n) { border-right: 1px solid var(--border); } .booking > div:nth-child(2n) { border-right: 0; }
+  }
+  @media (max-width: 640px) { .top, main { padding-left: 14px; padding-right: 14px; } .clock { display: none; } .hero { flex-direction: column; align-items: flex-start; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+    </div>
+    <div><h1>Call Tester</h1><p>Every call, verified against the booking</p></div>
+  </div>
+  <div class="top-right">
+    <div class="clock"><b id="clockTime">--:--:--</b><span id="clockDate"></span> · Pakistan time</div>
+    <div class="live" id="live"><span class="dot"></span><span id="liveText">Connecting...</span></div>
+    <button class="icon-btn" id="themeBtn" aria-label="Switch light/dark theme" title="Switch theme">&#9680;</button>
+  </div>
+</header>
+
+<main>
+  <section class="stats" id="stats"></section>
+  <div class="layout">
+    <aside class="listpane">
+      <div class="chips" id="chips"></div>
+      <div class="list" id="list"></div>
+    </aside>
+    <section id="detail"></section>
+  </div>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+  'use strict';
+  var PKT = 'Asia/Karachi';
+  var POLL_MS = 4000;
+
+  // ---------- tiny DOM helper: builds nodes with textContent, so call data can never inject HTML
+  function h(tag, attrs) {
+    var el = document.createElement(tag);
+    attrs = attrs || {};
+    Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    });
+    for (var i = 2; i < arguments.length; i++) append(el, arguments[i]);
+    return el;
+  }
+  function append(el, kid) {
+    if (kid === null || kid === undefined || kid === false) return;
+    if (Array.isArray(kid)) { kid.forEach(function (k) { append(el, k); }); return; }
+    el.appendChild(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- time (always Pakistan time)
+  function fmt(iso, opts) { return new Intl.DateTimeFormat('en-GB', Object.assign({ timeZone: PKT }, opts)).format(new Date(iso)); }
+  function fmtTime(iso) { return fmt(iso, { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase(); }
+  function fmtDay(iso) { return fmt(iso, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }); }
+  function dayKey(iso) { return fmt(iso, { year: 'numeric', month: '2-digit', day: '2-digit' }); }
+  function rel(iso) {
+    var s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 45) return 'just now';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    return '';
+  }
+  function tickClock() {
+    var now = new Date().toISOString();
+    $('clockTime').textContent = fmt(now, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    $('clockDate').textContent = fmt(now, { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+
+  // ---------- verdict styling
+  function tone(verdict, hasCritical) {
+    if (verdict === 'PASS') return 'pass';
+    if (verdict === 'NO_CHANGE') return 'idle';
+    if (verdict === 'ERROR') return 'fail';
+    return hasCritical ? 'fail' : 'warn';
+  }
+  var VERDICT_TEXT = { PASS: 'PASS', FLAG: 'FLAG', NO_CHANGE: 'NO CHANGE', ERROR: 'ERROR' };
+  var VERDICT_ICON = { PASS: '\u2713', FLAG: '!', NO_CHANGE: '\u2022', ERROR: '!' };
+
+  // ---------- state
+  var state = { calls: [], stats: null, filter: 'ALL', selected: null, detail: null, userPicked: false,
+                onlyProblems: false, seen: null, offline: false, loadingDetail: false };
+
+  // ---------- API
+  function api(path, opts) {
+    return fetch(path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) { var e = new Error(body.detail || ('HTTP ' + r.status)); e.status = r.status; throw e; }
+        return body;
+      });
+    });
+  }
+
+  // ---------- header / stats / chips
+  function setLive(ok, text) {
+    var el = $('live'); el.className = 'live' + (ok ? '' : ' off');
+    $('liveText').textContent = text;
+  }
+
+  function renderStats() {
+    var s = state.stats || { total: 0, pass: 0, flag: 0, error: 0, no_change: 0, pass_rate: null };
+    var root = clear($('stats'));
+    var rate = s.pass_rate;
+    root.appendChild(h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Calls audited'), h('div', { class: 'v' }, s.total)));
+    root.appendChild(h('div', { class: 'stat pass' }, h('div', { class: 'k' }, 'Verified (PASS)'), h('div', { class: 'v' }, s.pass)));
+    root.appendChild(h('div', { class: 'stat fail' }, h('div', { class: 'k' }, 'Flagged for review'), h('div', { class: 'v' }, s.flag + s.error)));
+    root.appendChild(h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Booking pass rate'),
+      h('div', { class: 'v' }, rate === null ? '\u2014' : rate + '%'),
+      h('div', { class: 'bar' }, h('i', { style: 'width:' + (rate || 0) + '%' }))));
+  }
+
+  function matchesFilter(c) {
+    if (state.filter === 'ALL') return true;
+    if (state.filter === 'FLAG') return c.verdict === 'FLAG' || c.verdict === 'ERROR';
+    return c.verdict === state.filter;
+  }
+
+  function renderChips() {
+    var s = state.stats || { total: 0, pass: 0, flag: 0, error: 0, no_change: 0 };
+    var defs = [['ALL', 'All', s.total], ['PASS', 'Pass', s.pass], ['FLAG', 'Flag', s.flag + s.error], ['NO_CHANGE', 'No change', s.no_change]];
+    var root = clear($('chips'));
+    defs.forEach(function (d) {
+      root.appendChild(h('button', { class: 'chip', 'aria-pressed': String(state.filter === d[0]),
+        onclick: function () { state.filter = d[0]; renderChips(); renderList(); } }, d[1] + ' ' + d[2]));
+    });
+  }
+
+  // ---------- call list
+  function renderList() {
+    var root = clear($('list'));
+    var calls = state.calls.filter(matchesFilter);
+    if (!calls.length) {
+      root.appendChild(h('div', { class: 'empty-list' },
+        h('b', null, state.calls.length ? 'No calls match this filter' : 'No calls audited yet'),
+        h('div', null, state.calls.length ? '' : 'Make a call. Its audit appears here a few seconds after you hang up.')));
+      return;
+    }
+    var lastDay = null;
+    calls.forEach(function (c) {
+      var dk = dayKey(c.started_at);
+      if (dk !== lastDay) { root.appendChild(h('div', { class: 'day' }, fmtDay(c.started_at))); lastDay = dk; }
+      var t = tone(c.verdict, c.has_critical);
+      var pct = c.total ? Math.round(100 * c.passed / c.total) : 0;
+      var item = h('button', { class: 'item' + (c.room === state.selected ? ' sel' : '') + (c.isNew ? ' new' : ''),
+        'data-room': c.room, onclick: function () { select(c.room, true); } },
+        h('div', { class: 'row1' },
+          h('div', null, h('span', { class: 'time' }, fmtTime(c.started_at)), h('span', { class: 'rel' }, rel(c.started_at))),
+          h('span', { class: 'pill ' + t }, VERDICT_TEXT[c.verdict] || c.verdict)),
+        h('div', { class: 'headline' }, c.headline),
+        h('div', { class: 'mini' }, h('span', { class: 'num' }, c.passed + '/' + c.total + ' checks passed'),
+          h('div', { class: 'bar' }, h('i', { style: 'width:' + pct + '%' }))));
+      root.appendChild(item);
+    });
+  }
+
+  // ---------- detail
+  var GROUPS = [
+    ['caller_vs_booking', 'Caller \u2192 Booking', 'What the caller said, compared with what was booked'],
+    ['rachel', "Rachel's confirmation", 'What Rachel said out loud on the call'],
+    ['booking_record', 'Booking record', 'Is the saved booking sound?'],
+    ['calendar', 'Google Calendar', 'Is it on the calendar, at the right Pakistan time?'],
+    ['call', 'The call itself', 'Was the call captured and readable?']
+  ];
+
+  function evidence(c) {
+    var said = c.group === 'caller_vs_booking';
+    var hasE = c.expected !== null && c.expected !== undefined && c.expected !== '';
+    var hasA = c.actual !== null && c.actual !== undefined && c.actual !== '';
+    if (!hasE && !hasA) return null;
+    var cells = [];
+    if (hasE) cells.push(h('div', null, h('em', null, said ? 'Caller said' : 'Expected'), h('span', null, c.expected)));
+    if (hasA) cells.push(h('div', null, h('em', null, said ? 'Booked' : 'Found'), h('span', null, c.actual)));
+    return h('div', { class: 'evid' + (cells.length === 1 ? ' one' : '') }, cells);
+  }
+
+  function checkRow(c) {
+    var fail = c.status === 'fail';
+    var review = fail && c.severity === 'review';
+    var glyph = c.status === 'pass' ? '\u2713' : (fail ? '\u2715' : '\u2013');
+    var icoClass = c.status === 'pass' ? 'pass' : (fail ? ('fail' + (review ? ' review' : '')) : 'skip');
+    return h('div', { class: 'check ' + c.status + (review ? ' review' : '') },
+      h('div', { class: 'ico ' + icoClass }, glyph),
+      h('div', null,
+        h('div', { class: 'lbl' }, c.label,
+          fail ? h('span', { class: 'sev ' + (c.severity || 'review') }, c.severity === 'critical' ? 'Critical' : 'Review') : null),
+        c.detail ? h('div', { class: 'det' }, c.detail) : null,
+        fail && c.code ? h('div', { class: 'det mono' }, c.code) : null),
+      evidence(c));
+  }
+
+  function groupSection(group, checks) {
+    var list = checks.filter(function (c) { return c.group === group[0]; });
+    if (state.onlyProblems) list = list.filter(function (c) { return c.status === 'fail'; });
+    if (!list.length) return null;
+    return h('div', { class: 'grp' },
+      h('div', { class: 'grp-h' }, h('b', null, group[1]), h('span', null, group[2])),
+      list.map(checkRow));
+  }
+
+  function bookingCard(b) {
+    var when = b.date ? fmtDayFromDate(b.date) + ', ' + fmtClock(b.start_time) + ' \u2013 ' + fmtClock(b.end_time) : '\u2014';
+    var verb = { BOOK_APPOINTMENT: 'Booked', RESCHEDULE_APPOINTMENT: 'Rescheduled', CANCEL_APPOINTMENT: 'Cancelled' }[b.action] || 'Changed';
+    function cell(k, v, mono) { return h('div', null, h('div', { class: 'k' }, k), h('div', { class: 'v' + (mono ? ' mono' : '') }, v || '\u2014')); }
+    return h('div', { class: 'card' },
+      h('div', { class: 'hd' }, h('h3', null, verb + ' appointment'), h('span', { class: 'refchip mono', title: 'Reference ID given to the caller' }, 'Ref ' + b.appointment_id)),
+      h('div', { class: 'booking' },
+        cell('Patient', b.patient_name), cell('Phone', b.phone, true), cell('Doctor', b.doctor + (b.specialization ? ' \u00b7 ' + b.specialization : '')),
+        cell('When (Pakistan time)', when), cell('Status', b.status), cell('Calendar event', b.calendar_event_id, true)));
+  }
+  // booking dates/times are clinic-local strings (YYYY-MM-DD, HH:MM)
+  function fmtDayFromDate(d) {
+    var p = d.split('-'); if (p.length !== 3) return d;
+    return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+      .format(new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])));
+  }
+  function fmtClock(t) {
+    var p = (t || '').split(':'); if (p.length < 2) return t || '';
+    var hr = +p[0], ap = hr >= 12 ? 'PM' : 'AM';
+    return ((hr % 12) || 12) + ':' + p[1] + ' ' + ap;
+  }
+
+  function checksCard(d) {
+    var checks = d.checks || [];
+    var passed = checks.filter(function (c) { return c.status === 'pass'; }).length;
+    var failed = checks.filter(function (c) { return c.status === 'fail'; }).length;
+    var skipped = checks.filter(function (c) { return c.status === 'skip'; }).length;
+    var ids = [];
+    checks.forEach(function (c) { if (c.appointment_id && ids.indexOf(c.appointment_id) < 0) ids.push(c.appointment_id); });
+
+    var body = [];
+    ids.forEach(function (id) {
+      var mine = checks.filter(function (c) { return c.appointment_id === id; });
+      if (ids.length > 1) body.push(h('div', { class: 'bk-title' }, 'Booking ', h('span', { class: 'mono' }, id)));
+      GROUPS.forEach(function (g) { body.push(groupSection(g, mine)); });
+    });
+    var callLevel = checks.filter(function (c) { return !c.appointment_id; });
+    if (callLevel.length) {
+      if (ids.length) body.push(h('div', { class: 'bk-title' }, 'Whole call'));
+      GROUPS.forEach(function (g) { body.push(groupSection(g, callLevel)); });
+    }
+    if (!body.some(Boolean)) body.push(h('div', { class: 'muted-note' }, state.onlyProblems ? 'No problems found.' : 'No checks were recorded.'));
+
+    return h('div', { class: 'card' },
+      h('div', { class: 'hd' },
+        h('div', null, h('h3', null, 'What the tester verified')),
+        h('div', { class: 'tally' },
+          h('span', { class: 't-pass' }, '\u2713 ' + passed + ' passed'),
+          h('span', { class: 't-fail' }, '\u2715 ' + failed + ' failed'),
+          skipped ? h('span', { class: 't-skip' }, '\u2013 ' + skipped + ' not compared') : null,
+          h('label', { class: 'toggle' },
+            h('input', { type: 'checkbox', checked: state.onlyProblems ? true : null,
+              onchange: function (e) { state.onlyProblems = e.target.checked; renderDetail(); } }), 'Show only problems'))),
+      body);
+  }
+
+  // transcript with the booked values highlighted
+  function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function highlightTerms(d) {
+    var terms = [];
+    (d.bookings || []).forEach(function (b) {
+      if (b.patient_name) terms.push(escapeRe(b.patient_name));
+      if (b.doctor) { terms.push(escapeRe(b.doctor)); terms.push(escapeRe(b.doctor.replace(/^dr\.?\s*/i, ''))); }
+      if (b.appointment_id) terms.push(escapeRe(b.appointment_id));
+      var digits = (b.phone || '').replace(/\D/g, '');
+      if (digits.length >= 7) terms.push(digits.split('').join('\\D{0,3}'));
+    });
+    terms = terms.filter(function (t) { return t && t.length > 2; });
+    return terms.length ? new RegExp('(' + terms.join('|') + ')', 'gi') : null;
+  }
+  function highlight(text, re) {
+    if (!re) return [text];
+    var out = [], last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0] === '') { re.lastIndex++; continue; }
+      if (m.index > last) out.push(text.slice(last, m.index));
+      out.push(h('mark', null, m[0]));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+
+  function transcriptCard(d) {
+    var turns = d.transcript || [];
+    var re = highlightTerms(d);
+    return h('div', { class: 'card' },
+      h('div', { class: 'hd' }, h('h3', null, 'Call transcript'),
+        h('small', null, turns.length ? 'Highlighted: the booked name, doctor, phone and reference ID' : '')),
+      turns.length
+        ? h('div', { class: 'chat' }, turns.map(function (t) {
+            return h('div', { class: 'msg ' + t.speaker }, h('small', null, t.speaker === 'rachel' ? 'Rachel' : 'Caller'), highlight(t.text, re));
+          }))
+        : h('div', { class: 'muted-note' }, 'The transcript for this call was not stored (STORE_CALL_TRANSCRIPTS is off), so it cannot be shown or re-verified.'));
+  }
+
+  function renderDetail() {
+    var root = clear($('detail'));
+    var d = state.detail;
+    if (!state.selected) {
+      root.appendChild(h('div', { class: 'placeholder' }, h('h3', null, 'Select a call'),
+        h('div', null, 'Pick a call on the left to see exactly what was verified.')));
+      return;
+    }
+    if (!d || d.room !== state.selected) {
+      root.appendChild(h('div', { class: 'skeleton' })); root.appendChild(h('div', { class: 'skeleton' }));
+      return;
+    }
+    var t = tone(d.verdict, d.has_critical);
+    var failed = d.failed;
+    var bannerText = {
+      PASS: 'Everything checks out. What the caller asked for is what was booked, Rachel confirmed it, and it is on the calendar.',
+      NO_CHANGE: 'No appointment was requested on this call, so there was nothing to verify against a booking.',
+      ERROR: 'The tester itself crashed while checking this call. Re-verify, or look at the error below.'
+    }[d.verdict] || (failed + (failed === 1 ? ' check' : ' checks') + ' failed. ' +
+      (d.has_critical ? 'Something does not match: this call needs a human look.' : 'Worth a quick review.'));
+
+    var reBtn = h('button', { class: 'btn primary', id: 'reverifyBtn', onclick: reverify, title: 'Run every check again on this call, right now' }, 'Re-verify');
+    var copyBtn = h('button', { class: 'btn', onclick: function () {
+      try { navigator.clipboard.writeText(d.room); toast('Call ID copied'); } catch (e) { toast('Copy failed'); }
+    } }, 'Copy call ID');
+
+    root.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'hero' },
+        h('div', { class: 'badge ' + t }, VERDICT_ICON[d.verdict] || '?'),
+        h('div', { class: 'grow' },
+          h('h2', null, d.headline),
+          h('div', { class: 'sub' },
+            h('span', null, fmtDay(d.started_at) + ', ' + fmtTime(d.started_at) + ' PKT'),
+            h('span', { class: 'mono' }, d.room),
+            d.reverified_at ? h('span', null, 'Re-verified ' + fmtTime(d.reverified_at)) : null)),
+        h('div', { class: 'btns' }, copyBtn, reBtn)),
+      h('div', { class: 'banner ' + t }, h('b', null, (VERDICT_TEXT[d.verdict] || d.verdict) + '. '), bannerText),
+      d.error_text ? h('div', { class: 'errtext' }, d.error_text) : null));
+
+    (d.bookings || []).forEach(function (b) { root.appendChild(bookingCard(b)); });
+    root.appendChild(checksCard(d));
+    root.appendChild(transcriptCard(d));
+  }
+
+  // ---------- actions
+  var toastTimer = null;
+  function toast(msg) {
+    var el = $('toast'); el.textContent = msg; el.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2200);
+  }
+
+  function select(room, byUser) {
+    if (byUser) state.userPicked = true;
+    state.selected = room;
+    if (!state.detail || state.detail.room !== room) state.detail = null;
+    try { history.replaceState(null, '', '#' + encodeURIComponent(room)); } catch (e) {}
+    renderList(); renderDetail();
+    return loadDetail(room);
+  }
+
+  function loadDetail(room) {
+    return api('/api/tester/calls/' + encodeURIComponent(room)).then(function (d) {
+      if (state.selected !== room) return;
+      state.detail = d; renderDetail();
+    }).catch(function (e) {
+      if (state.selected !== room) return;
+      var root = clear($('detail'));
+      root.appendChild(h('div', { class: 'placeholder' }, h('h3', null, 'Could not load this call'), h('div', null, e.message)));
+    });
+  }
+
+  function reverify() {
+    var room = state.selected, btn = $('reverifyBtn');
+    if (!room) return;
+    btn.disabled = true; btn.textContent = 'Verifying...';
+    api('/api/tester/calls/' + encodeURIComponent(room) + '/reverify', { method: 'POST' }).then(function (d) {
+      state.detail = d; renderDetail(); toast('Re-verified: ' + (VERDICT_TEXT[d.verdict] || d.verdict));
+      return refresh();
+    }).catch(function (e) {
+      toast(e.message || 'Re-verify failed');
+      var b = $('reverifyBtn'); if (b) { b.disabled = false; b.textContent = 'Re-verify'; }
+    });
+  }
+
+  // ---------- polling
+  function refresh() {
+    return api('/api/tester/calls?limit=60').then(function (data) {
+      var firstLoad = state.seen === null;
+      var seen = state.seen || {};
+      data.calls.forEach(function (c) {
+        if (!firstLoad && !seen[c.room]) c.isNew = true;
+        seen[c.room] = true;
+      });
+      state.seen = seen; state.calls = data.calls; state.stats = data.stats;
+      state.offline = false;
+      setLive(true, 'Live \u00b7 ' + fmt(new Date().toISOString(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }));
+      renderStats(); renderChips(); renderList();
+
+      // follow the newest call until the user picks one themselves
+      var newest = data.calls[0];
+      if (newest && (!state.selected || (!state.userPicked && state.selected !== newest.room))) {
+        return select(newest.room, false);
+      }
+      // keep the open call fresh if it changed (e.g. re-verified elsewhere)
+      var cur = data.calls.filter(function (c) { return c.room === state.selected; })[0];
+      if (cur && state.detail && (cur.completed_at !== state.detail.completed_at)) return loadDetail(state.selected);
+    }).catch(function () {
+      state.offline = true; setLive(false, 'Offline: is the API running?');
+    });
+  }
+
+  function init() {
+    $('themeBtn').addEventListener('click', function () {
+      var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('tester-theme', next); } catch (e) {}
+    });
+    tickClock(); setInterval(tickClock, 1000);
+    renderStats(); renderChips(); renderList(); renderDetail();
+    var fromHash = decodeURIComponent((location.hash || '').slice(1));
+    if (fromHash) { state.userPicked = true; state.selected = fromHash; loadDetail(fromHash); }
+    refresh();
+    setInterval(function () { if (!document.hidden) refresh(); }, POLL_MS);
+  }
+  init();
+})();
+</script>
+</body>
+</html>

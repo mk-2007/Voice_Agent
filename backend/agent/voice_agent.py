@@ -47,9 +47,10 @@ except ImportError:
 
 from config.settings import settings
 from backend.database.connection import SessionLocal, init_db
-from backend.services.call_auditor import audit_live_call, persist_audit
+from backend.services.call_auditor import record_audit_error, run_and_store_audit
 from backend.services.live_call_verifier import database_urls_match
 from backend.call_context import current_voice_call_id
+from backend.agent.guards import list_doctor_names, resolve_doctor, validate_name, validate_phone
 from backend.agent.prompts import RECEPTIONIST_SYSTEM_PROMPT
 from backend.tools.clinical_tools import (
     get_clinic_information,
@@ -192,6 +193,29 @@ def log_voice_turn_latency(event: Any) -> None:
 # LiveKit Function Tool Registrations
 # =====================================================================
 
+def _canonical_doctor(raw: str):
+    """Map what the model passed (an ID, a name, a guess) to the real doctor ID.
+
+    Returns (doctor_id_to_use, valid_doctor_names). Never raises: if the lookup fails
+    or nothing matches, the original value is used and the tool reports the problem.
+    """
+    try:
+        with SessionLocal() as db:
+            doc = resolve_doctor(db, raw)
+            names = list_doctor_names(db)
+        return (doc.doctor_id if doc else raw), names
+    except Exception:
+        logger.exception("Doctor lookup failed; using the value as given")
+        return raw, []
+
+
+def _with_doctor_list(message: str, names: List[str]) -> str:
+    """If a tool said a doctor was not found, tell the model who the valid doctors are."""
+    if names and "not found" in message.lower():
+        return f"{message} Valid doctors: {', '.join(names)}. Ask the caller which of these they mean."
+    return message
+
+
 @function_tool
 async def check_doctor_availability(
     doctor_id: str,
@@ -200,15 +224,17 @@ async def check_doctor_availability(
 ) -> str:
     """
     Check if a doctor is available on a specific date (YYYY-MM-DD) and optional time (HH:MM).
+    doctor_id is the doctor's full name, for example "Dr. Ahmed Khan" (an ID also works).
     Always call this tool before telling a patient that a slot is free.
     """
+    doctor_id, names = await asyncio.to_thread(_canonical_doctor, doctor_id)
     res = await asyncio.to_thread(
         check_availability,
         doctor_id=doctor_id,
         appointment_date=appointment_date,
         preferred_time=preferred_time,
     )
-    return res.get("message", "Checked availability.")
+    return _with_doctor_list(res.get("message", "Checked availability."), names)
 
 
 @function_tool
@@ -222,12 +248,20 @@ async def book_clinical_appointment(
 ) -> str:
     """
     Confirm and book an appointment after the patient has explicitly agreed.
-    Requires patient name, contact number, doctor ID/name, date (YYYY-MM-DD), and time (HH:MM).
+    Requires patient name, contact number, doctor name (for example "Dr. Ahmed Khan"),
+    date (YYYY-MM-DD), and time (HH:MM).
     """
+    name_ok, name_problem = validate_name(patient_name)
+    if not name_ok:
+        return name_problem
+    phone_ok, phone_problem = validate_phone(contact_number)
+    if not phone_ok:
+        return phone_problem
+    doctor_id, names = await asyncio.to_thread(_canonical_doctor, doctor_id)
     res = await asyncio.to_thread(
         book_appointment,
-        patient_name=patient_name,
-        contact_number=contact_number,
+        patient_name=patient_name.strip(),
+        contact_number=contact_number.strip(),
         doctor_id=doctor_id,
         appointment_date=appointment_date,
         appointment_time=appointment_time,
@@ -235,7 +269,7 @@ async def book_clinical_appointment(
     )
     message = res.get("message", "Appointment booking failed.")
     if res.get("status") != "CONFIRMED":
-        return f"Booking was not confirmed. {message}"
+        return _with_doctor_list(f"Booking was not confirmed. {message}", names)
     return f"{message} Confirmation ID: {res['appointment_id']}."
 
 
@@ -394,20 +428,30 @@ def prewarm(proc: JobProcess):
 
 
 async def _audit_call(room: str, started: datetime, transcript: str) -> None:
-    """Verify the finished call against the DB and calendar. Never raises."""
+    """Verify the finished call against the database and calendar, and store every check.
+
+    Never raises. If the tester itself fails (or times out), an ERROR row is stored so the
+    Tester page shows it instead of the call silently going unchecked.
+    """
     scope = "test" if settings.LIVEKIT_AGENT_NAME == settings.LIVE_TEST_AGENT_NAME else "live"
 
     def _run():
         with SessionLocal() as db:
-            result = audit_live_call(transcript, room, started, db)
-            persist_audit(db, room, scope, started, result)
-            return result
+            return run_and_store_audit(db, room, scope, started, transcript)
+
+    def _record_error(message: str) -> None:
+        try:
+            with SessionLocal() as db:
+                record_audit_error(db, room, scope, started, message, transcript=transcript)
+        except Exception:
+            logger.exception("Could not record the audit error either")
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await asyncio.wait_for(asyncio.to_thread(_run), timeout=45)
         logger.info("Call audit room=%s verdict=%s findings=%s", room, result.verdict, result.findings)
-    except Exception:
+    except Exception as exc:
         logger.exception("Call audit failed")
+        await asyncio.to_thread(_record_error, f"{type(exc).__name__}: {exc}")
 
 
 async def entrypoint(ctx: JobContext):
